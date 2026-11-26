@@ -38,6 +38,23 @@ pub struct LayerBands {
 }
 
 impl LayerBands {
+    /// Depth-proportional layer bands (~40% syntax, ~40% knowledge, ~20% output)
+    /// without consulting a family name. Returns `None` below [`MIN_BANDED_LAYERS`].
+    pub fn proportional(num_layers: usize) -> Option<Self> {
+        if num_layers < MIN_BANDED_LAYERS {
+            return None;
+        }
+        let last = num_layers.saturating_sub(1);
+        // ~40% syntax, ~40% knowledge, ~20% output.
+        let syntax_end = num_layers * SYNTAX_FIFTHS / FIFTHS;
+        let knowledge_end = num_layers * (SYNTAX_FIFTHS + KNOWLEDGE_FIFTHS) / FIFTHS;
+        Some(Self {
+            syntax: (0, syntax_end.saturating_sub(1)),
+            knowledge: (syntax_end, knowledge_end.saturating_sub(1)),
+            output: (knowledge_end, last),
+        })
+    }
+
     /// Layer bands for a model: the split its family declares for exactly
     /// this `model_type` and depth (`larql_models` architecture layer), or
     /// a proportional estimate. `None` below [`MIN_BANDED_LAYERS`].
@@ -50,17 +67,7 @@ impl LayerBands {
                 output: (split.knowledge_last + 1, last),
             });
         }
-        if num_layers < MIN_BANDED_LAYERS {
-            return None;
-        }
-        // ~40% syntax, ~40% knowledge, ~20% output.
-        let syntax_end = num_layers * SYNTAX_FIFTHS / FIFTHS;
-        let knowledge_end = num_layers * (SYNTAX_FIFTHS + KNOWLEDGE_FIFTHS) / FIFTHS;
-        Some(Self {
-            syntax: (0, syntax_end.saturating_sub(1)),
-            knowledge: (syntax_end, knowledge_end.saturating_sub(1)),
-            output: (knowledge_end, last),
-        })
+        Self::proportional(num_layers)
     }
 
     /// Check which band a layer belongs to.
@@ -193,5 +200,14 @@ mod tests {
         assert_eq!(b.syntax, (0, 4));
         assert_eq!(b.knowledge, (5, 9));
         assert_eq!(b.output, (10, 11));
+    }
+
+    #[test]
+    fn proportional_bands_partition_24_layers_and_skip_shallow_stacks() {
+        assert!(LayerBands::proportional(MIN_BANDED_LAYERS - 1).is_none());
+        let b = LayerBands::proportional(24).expect("24 layers >= MIN_BANDED_LAYERS");
+        assert_eq!(b.syntax, (0, 8));
+        assert_eq!(b.knowledge, (9, 18));
+        assert_eq!(b.output, (19, 23));
     }
 }

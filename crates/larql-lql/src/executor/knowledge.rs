@@ -311,18 +311,18 @@ impl Session {
                             .into(),
                     )
                 })?;
+                let num_layers = view.num_layers();
                 let last = runtime.plan().layers.len().saturating_sub(1);
+                let bands = LayerBands::proportional(num_layers).unwrap_or(LayerBands {
+                    syntax: (0, last),
+                    knowledge: (0, last),
+                    output: (0, last),
+                });
                 Ok(BrowseCtx {
                     path,
-                    num_layers: view.num_layers(),
+                    num_layers,
                     intermediate_size: view.max_features(),
-                    // The plan declares no band semantics yet; all
-                    // three bands honestly span the whole stack.
-                    bands: LayerBands {
-                        syntax: (0, last),
-                        knowledge: (0, last),
-                        output: (0, last),
-                    },
+                    bands,
                     config: None,
                     source: KnowledgeSource::V3 { view, overlay },
                 })
