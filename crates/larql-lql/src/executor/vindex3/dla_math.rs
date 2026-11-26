@@ -8,7 +8,7 @@ use larql_vindex::format::vindex3::opplan::exec::Plane;
 use larql_vindex::format::vindex3::opplan::{LayerAttention, NormOp, OperandRef};
 use larql_vindex::VindexError;
 
-use crate::ast::CaptureLayers;
+use crate::ast::{CaptureLayers, DlaTarget};
 use crate::error::LqlError;
 
 pub(super) fn resolve_dla_layers(
@@ -36,39 +36,58 @@ pub(super) fn resolve_dla_layers(
     Ok(raw)
 }
 
-pub(super) fn resolve_single_token(
+pub(super) fn resolve_dla_target(
     tokenizer: &larql_vindex::tokenizers::Tokenizer,
-    text: &str,
+    target: &DlaTarget,
     clause: &str,
     vocab_size: usize,
-) -> Result<u32, LqlError> {
-    let encoding = tokenizer
-        .encode(text, false)
-        .map_err(|e| LqlError::exec("DLA tokenize target", e))?;
-    let ids = encoding.get_ids();
-    if ids.len() != 1 {
-        let pieces: Vec<String> = ids
-            .iter()
-            .map(|&id| {
-                format!(
-                    "{:?} [id {id}]",
-                    tokenizer.decode(&[id], false).unwrap_or_default()
-                )
-            })
-            .collect();
-        return Err(LqlError::Execution(format!(
-            "DLA {clause} {text:?} must encode to exactly 1 token, got {} ({})",
-            ids.len(),
-            pieces.join(", ")
-        )));
+) -> Result<(u32, String), LqlError> {
+    match target {
+        DlaTarget::Id(id) => {
+            if (*id as usize) >= vocab_size {
+                return Err(LqlError::Execution(format!(
+                    "DLA {clause} ID {id} is outside vocabulary size {vocab_size}"
+                )));
+            }
+            let label = tokenizer
+                .decode(&[*id], false)
+                .unwrap_or_else(|_| format!("<id:{id}>"));
+            Ok((*id, label))
+        }
+        DlaTarget::Text(text) => {
+            let encoding = tokenizer
+                .encode(text.as_str(), false)
+                .map_err(|e| LqlError::exec("DLA tokenize target", e))?;
+            let ids = encoding.get_ids();
+            if ids.len() != 1 {
+                let pieces: Vec<String> = ids
+                    .iter()
+                    .map(|&id| {
+                        format!(
+                            "{:?} [id {id}]",
+                            tokenizer.decode(&[id], false).unwrap_or_default()
+                        )
+                    })
+                    .collect();
+                let hint = ids
+                    .first()
+                    .map(|first| format!("; use `{clause} ID {first}` to target its first token"))
+                    .unwrap_or_default();
+                return Err(LqlError::Execution(format!(
+                    "DLA {clause} {text:?} must encode to exactly 1 token, got {} ({}){hint}",
+                    ids.len(),
+                    pieces.join(", ")
+                )));
+            }
+            let id = ids[0];
+            if (id as usize) >= vocab_size {
+                return Err(LqlError::Execution(format!(
+                    "DLA {clause} {text:?} resolved to token id {id}, outside vocabulary size {vocab_size}"
+                )));
+            }
+            Ok((id, text.clone()))
+        }
     }
-    let id = ids[0];
-    if (id as usize) >= vocab_size {
-        return Err(LqlError::Execution(format!(
-            "DLA {clause} {text:?} resolved to token id {id}, outside vocabulary size {vocab_size}"
-        )));
-    }
-    Ok(id)
 }
 
 pub(super) fn plane_rows<'a>(plane: &'a Plane, label: &str) -> Result<&'a [Vec<f32>], VindexError> {

@@ -210,11 +210,13 @@ pub(super) static DLA: StatementHelp = StatementHelp {
     aliases: &[],
     group: HelpGroup::Run,
     syntax: &[
-        "DLA \"<prompt>\" FOR \"<token_a>\" VS \"<token_b>\" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (<n>, ...)] [TOP <k> [COLUMNS]] [TOP <m> HEADS];",
+        "DLA \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>} [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (<n>, ...)] [TOP <k> [COLUMNS]] [TOP <m> HEADS];",
     ],
     does: &[
         "Computes exact Direct Logit Attribution for logit(token_a) - logit(token_b) at the prompt's",
         "final position in a single forward pass over the already-loaded VINDEX3 weights.",
+        "Each target can be a single-token string literal or an explicit vocabulary token ID (ID <n>),",
+        "avoiding multi-token ambiguity or leading-space confusion.",
         "Decomposes the pre-softcap logit difference additively into embedding + per-layer operator",
         "(attention or ShortConv/mixer) + per-layer FFN contributions using the linearized final norm.",
         "With TOP <k> COLUMNS, also linearizes each dense FFN's post-FFN norm (and residual/layer scale)",
@@ -226,7 +228,7 @@ pub(super) static DLA: StatementHelp = StatementHelp {
     examples: &[
         "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\";",
         "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" LAYERS 0-23 TOP 12 COLUMNS;",
-        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" AT LAYERS (20, 22) TOP 8 HEADS;",
+        "DLA \"The capital of France is\" FOR ID 4741 VS ID 4595 AT LAYERS (20, 22) TOP 8 HEADS;",
     ],
     needs: &[Need::Vindex3, Need::Tokenizer],
     effect: &[

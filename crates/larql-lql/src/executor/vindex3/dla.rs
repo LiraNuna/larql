@@ -17,10 +17,10 @@ use larql_vindex::format::vindex3::opplan::LayerFfn;
 
 use super::dla_math::{
     dot_diff_f64, dot_f64, linearize_norm, load_two_rows, mixer_label, plane_rows,
-    resolve_dla_layers, resolve_single_token,
+    resolve_dla_layers, resolve_dla_target,
 };
 use super::{encode_raw_prompt, prepared_operands_for_session, v3_continuation};
-use crate::ast::CaptureLayers;
+use crate::ast::{CaptureLayers, DlaTarget};
 use crate::error::LqlError;
 use crate::executor::Session;
 
@@ -79,16 +79,19 @@ pub struct DlaReport {
 }
 
 impl Session {
-    /// Typed direct logit attribution for `token_a` vs `token_b` at the prompt's final position.
+    /// Typed direct logit attribution for `target_a` vs `target_b` (text literal or explicit token ID)
+    /// at the prompt's final position.
     pub fn dla(
         &self,
         prompt: &str,
-        target_a: &str,
-        target_b: &str,
+        target_a: impl Into<DlaTarget>,
+        target_b: impl Into<DlaTarget>,
         layers: Option<&CaptureLayers>,
         top_columns: Option<u32>,
         top_heads: Option<u32>,
     ) -> Result<DlaReport, LqlError> {
+        let target_a = target_a.into();
+        let target_b = target_b.into();
         let (runtime, tokenizer, overlay, bos_token, prepared_cache) =
             self.v3_text_program("DLA")?;
         let plan = runtime.plan();
@@ -125,8 +128,8 @@ impl Session {
                 "DLA: prompt encoded to zero tokens".into(),
             ));
         }
-        let token_id_a = resolve_single_token(tokenizer, target_a, "FOR", vocab_size)?;
-        let token_id_b = resolve_single_token(tokenizer, target_b, "VS", vocab_size)?;
+        let (token_id_a, label_a) = resolve_dla_target(tokenizer, &target_a, "FOR", vocab_size)?;
+        let (token_id_b, label_b) = resolve_dla_target(tokenizer, &target_b, "VS", vocab_size)?;
 
         let start = std::time::Instant::now();
         let (ops, overrides) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
@@ -504,10 +507,10 @@ impl Session {
 
         Ok(DlaReport {
             prompt_ids,
-            target_a: target_a.to_string(),
+            target_a: label_a,
             token_id_a,
             logit_a,
-            target_b: target_b.to_string(),
+            target_b: label_b,
             token_id_b,
             logit_b,
             exact_logit_diff,
@@ -528,8 +531,8 @@ impl Session {
     pub(crate) fn exec_dla(
         &self,
         prompt: &str,
-        target_a: &str,
-        target_b: &str,
+        target_a: &DlaTarget,
+        target_b: &DlaTarget,
         layers: Option<&CaptureLayers>,
         top_columns: Option<u32>,
         top_heads: Option<u32>,

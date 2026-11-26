@@ -217,6 +217,9 @@ fn parses_all_dla_forms() {
         r#"DLA "[1] [2]" FOR "[5]" VS "[6]" LAYERS ALL TOP 3 COLUMNS;"#,
         r#"DLA "[1] [2]" FOR "[5]" VS "[6]" AT LAYERS (1, 3) TOP 4 HEADS;"#,
         r#"DLA "[1] [2]" FOR "[5]" VS "[6]" LAYERS 0-3 TOP 6 COLUMNS TOP 4 HEADS;"#,
+        r#"DLA "[1] [2]" FOR ID 5 VS ID 12;"#,
+        r#"DLA "[1] [2]" FOR "[5]" VS ID 12 AT LAYERS (1, 3) TOP 4 HEADS;"#,
+        r#"DLA "[1] [2]" FOR ID 5 VS "[12]" LAYERS 0-3 TOP 6 COLUMNS;"#,
     ] {
         let stmt = parse(src).unwrap_or_else(|e| panic!("parse {src}: {e}"));
         assert!(matches!(stmt, Statement::Dla { .. }), "{stmt:?}");
@@ -435,13 +438,56 @@ fn dla_runs_under_auto_source_with_hybrid_live_patches_and_cached_operands() {
 }
 
 #[test]
+fn dla_token_id_targets_match_text_targets_bit_for_bit_and_refuse_oob() {
+    let (_dir, mut session) = lfm3_session();
+    let by_text = session
+        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(8))
+        .unwrap();
+    let by_id = session
+        .dla("[3] [7] [11] [15]", 5u32, 12u32, None, Some(10), Some(8))
+        .unwrap();
+    assert_eq!(by_id.token_id_a, 5);
+    assert_eq!(by_id.token_id_b, 12);
+    assert_eq!(by_id.target_a, "[5]");
+    assert_eq!(by_id.target_b, "[12]");
+    assert_eq!(
+        by_id.exact_logit_diff.to_bits(),
+        by_text.exact_logit_diff.to_bits()
+    );
+    assert_eq!(by_id.total_dla.to_bits(), by_text.total_dla.to_bits());
+    assert_eq!(by_id.top_heads, by_text.top_heads);
+    assert_eq!(by_id.top_columns, by_text.top_columns);
+
+    let lines = session
+        .execute(
+            &parse(r#"DLA "[3] [7] [11] [15]" FOR ID 5 VS ID 12 AT LAYERS (1, 3) TOP 4 HEADS;"#)
+                .unwrap(),
+        )
+        .unwrap();
+    let rendered = lines.join("\n");
+    assert!(
+        rendered.contains("[id 5]") && rendered.contains("[id 12]"),
+        "{rendered}"
+    );
+
+    let err = session
+        .execute(&parse(r#"DLA "[3] [7]" FOR ID 9999 VS ID 12;"#).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("outside vocabulary"), "{err}");
+}
+
+#[test]
 fn dla_refuses_multi_token_targets_and_bad_layers() {
     let (_dir, mut session) = lfm3_session();
     let err = session
         .dla("[3] [7]", "[5] [6]", "[12]", None, None, None)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("exactly 1 token"), "{err}");
+    assert!(
+        err.contains("exactly 1 token") && err.contains("FOR ID 5"),
+        "{err}"
+    );
 
     let err = session
         .dla("[3] [7]", "[5]", "", None, None, None)

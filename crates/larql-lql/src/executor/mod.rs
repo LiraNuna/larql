@@ -60,7 +60,9 @@ pub mod operations {
         EditedElement, Generated, NpyDescr, OperandValues, Prediction, Predictions, StagedLowRank,
         StagedWeightDelta, WeightRead,
     };
-    pub use crate::ast::{CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite};
+    pub use crate::ast::{
+        CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite, DlaTarget,
+    };
     pub use larql_vindex::format::vindex3::stored_tensor::{BareName, TensorListing};
     pub use larql_vindex::format::vindex3::weight_patch::structured::OperandBits;
     pub use larql_vindex::format::vindex3::weight_patch::LowRankColumnsOp;

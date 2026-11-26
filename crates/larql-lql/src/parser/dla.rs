@@ -5,7 +5,7 @@
 //! attributes each dense FFN's contribution down to individual `W_down` columns.
 
 use super::{ParseError, Parser};
-use crate::ast::{CaptureLayers, Statement};
+use crate::ast::{CaptureLayers, DlaTarget, Statement};
 use crate::lexer::{Keyword, Token};
 
 const TOPIC: &str = "DLA";
@@ -22,12 +22,12 @@ impl Parser {
             return Err(self.expected_one_of("DLA \"<prompt>\"", &["FOR"], TOPIC));
         }
         self.advance();
-        let target_a = self.expect_string()?;
+        let target_a = self.parse_dla_target("FOR")?;
         if !is_word(&self.peek(), "VS") {
-            return Err(self.expected_one_of("FOR \"<token_a>\"", &["VS"], TOPIC));
+            return Err(self.expected_one_of("FOR <target>", &["VS"], TOPIC));
         }
         self.advance();
-        let target_b = self.expect_string()?;
+        let target_b = self.parse_dla_target("VS")?;
 
         let mut layers: Option<CaptureLayers> = None;
         let mut top_columns: Option<u32> = None;
@@ -83,6 +83,22 @@ impl Parser {
             top_columns,
             top_heads,
         })
+    }
+
+    fn parse_dla_target(&mut self, clause: &str) -> Result<DlaTarget, ParseError> {
+        if is_word(&self.peek(), "ID") {
+            self.advance();
+            let id = self.expect_u32()?;
+            return Ok(DlaTarget::Id(id));
+        }
+        if matches!(self.peek(), Token::StringLit(_)) {
+            return Ok(DlaTarget::Text(self.expect_string()?));
+        }
+        Err(self.expected_one_of(
+            &format!("DLA ... {clause}"),
+            &["\"<token>\"", "ID <n>"],
+            TOPIC,
+        ))
     }
 
     fn parse_dla_at_layers(&mut self) -> Result<Option<CaptureLayers>, ParseError> {

@@ -340,11 +340,11 @@ pub enum Statement {
     },
 
     // ── Direct Logit Attribution ──
-    /// `DLA "<prompt>" FOR "<token_a>" VS "<token_b>" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (...)] [TOP <k> [COLUMNS]] [TOP <m> HEADS];`
+    /// `DLA "<prompt>" FOR {"<token_a>" | ID <id_a>} VS {"<token_b>" | ID <id_b>} [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (...)] [TOP <k> [COLUMNS]] [TOP <m> HEADS];`
     Dla {
         prompt: String,
-        target_a: String,
-        target_b: String,
+        target_a: DlaTarget,
+        target_b: DlaTarget,
         layers: Option<CaptureLayers>,
         top_columns: Option<u32>,
         top_heads: Option<u32>,
@@ -480,6 +480,37 @@ pub enum LayerBand {
     Output,
     /// All layers: syntax + knowledge + output
     All,
+}
+
+/// Target token specification for `DLA`: either a single-token text literal or an explicit vocabulary ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DlaTarget {
+    Text(String),
+    Id(u32),
+}
+
+impl From<&str> for DlaTarget {
+    fn from(s: &str) -> Self {
+        Self::Text(s.to_string())
+    }
+}
+
+impl From<String> for DlaTarget {
+    fn from(s: String) -> Self {
+        Self::Text(s)
+    }
+}
+
+impl From<u32> for DlaTarget {
+    fn from(id: u32) -> Self {
+        Self::Id(id)
+    }
+}
+
+impl From<&DlaTarget> for DlaTarget {
+    fn from(target: &DlaTarget) -> Self {
+        target.clone()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
