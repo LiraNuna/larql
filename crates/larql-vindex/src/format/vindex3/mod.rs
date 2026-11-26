@@ -44,6 +44,7 @@ pub mod compile;
 pub mod container_path;
 pub mod diff;
 pub mod encode;
+pub mod export_safetensors;
 /// Miniature whole-model checkpoint writers, public so sibling crates'
 /// integration tests can encode a real container without duplicating
 /// the frozen fixture geometry the executor's parity gates certify.

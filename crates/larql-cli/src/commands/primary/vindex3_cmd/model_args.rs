@@ -42,6 +42,7 @@ pub fn resolve_with(cmd: &mut Vindex3Command, resolve: &ModelResolver<'_>) -> Re
 pub fn model_slots(cmd: &mut Vindex3Command) -> Vec<&mut PathBuf> {
     match cmd {
         Vindex3Command::Plan(_) | Vindex3Command::Encode(_) => Vec::new(),
+        Vindex3Command::Export(a) => vec![&mut a.container],
         Vindex3Command::Inspect(a) => vec![&mut a.container],
         Vindex3Command::References(a) => vec![&mut a.container],
         Vindex3Command::Verify(a) => vec![&mut a.container],

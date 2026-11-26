@@ -13,6 +13,7 @@ pub fn run(mut cmd: Vindex3Command) -> Result<(), Box<dyn std::error::Error>> {
     match cmd {
         Vindex3Command::Plan(args) => run_plan(args),
         Vindex3Command::Encode(args) => run_encode(args),
+        Vindex3Command::Export(args) => export::run(args),
         Vindex3Command::Inspect(args) => run_inspect(args),
         Vindex3Command::References(args) => run_references(args),
         Vindex3Command::Verify(args) => run_verify(args),
@@ -34,6 +35,7 @@ mod bank;
 mod consequence;
 pub(crate) mod decode;
 mod exec;
+pub(crate) mod export;
 mod generate;
 mod input_moments;
 mod intervention;

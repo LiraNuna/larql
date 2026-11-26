@@ -16,6 +16,9 @@ pub enum Vindex3Command {
     /// inadmissible plan; consumes the built graph, never re-interprets
     /// the checkpoint.
     Encode(EncodeArgs),
+    /// Export a canonical VINDEX3 container to Hugging Face safetensors with
+    /// exact read-back SHA-256 verification.
+    Export(export::ExportArgs),
     /// Reconstruct and check a container solely from its own contents —
     /// no source checkpoint, no architecture registry (the G3 gate).
     Inspect(InspectArgs),
