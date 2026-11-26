@@ -4,15 +4,10 @@
 //!
 //! Nothing here computes a forward pass of its own. Every value is one the executor produced while running the
 //! session's program, over the operands `INFER` resolves (the stored weights, or the patched bytes of the
-//! stored-weight ops in effect, or a refusal where INFER refuses):
-//!
-//! - `residual`, `post_attention`, `ffn.input`, `final` and `logits` come from the one-shot traversal INFER runs
-//!   ([`batch`]);
-//! - `ffn.down_input` and `ffn.down_output` come from TRACE's decode steps, the only path that exposes the down
-//!   projection ([`decode`]); the sidecar records whether those steps' FFN input equals INFER's pass bit for bit.
+//! stored-weight ops in effect, or a refusal where INFER refuses), observed directly from the one-shot batch
+//! prefill traversal INFER runs ([`batch`]).
 
 mod batch;
-mod decode;
 mod geometry;
 mod provenance;
 mod sequence;
@@ -37,9 +32,8 @@ const STATEMENT: &str = "CAPTURE";
 const SIDECAR_SCHEMA: &str = "larql-capture/v1";
 /// The array type every capture writes: the f32 values the executor held.
 const DESCR: NpyDescr = NpyDescr::F4;
-/// The two execution paths a capture reads, as the sidecar names them.
+/// The execution path a capture reads, as the sidecar names it.
 const PATH_INFER_PASS: &str = "the one-shot traversal INFER runs, observed";
-const PATH_DECODE_STEPS: &str = "TRACE's decode steps from position 0, observed";
 /// How a prompt is encoded, as the sidecar says it.
 const PROMPT_ENCODING: &str =
     "INFER's raw-prompt encoder: the tokenizer's own special tokens, plus the \
@@ -233,36 +227,17 @@ impl Session {
         let positions = sequence::positions(spec.positions, &sequence)?;
         let overrides: Option<OperandOverrides> = execution_overrides(runtime, overlay)?;
         let continuation = v3_continuation(runtime)?;
-        let (blocks, path, cross_check) = match batch::PassSite::of(site) {
-            None => {
-                let captured = decode::capture(
-                    runtime,
-                    overrides.as_ref(),
-                    &continuation,
-                    &sequence.ids,
-                    site,
-                    &layers,
-                    &positions,
-                )?;
-                let check = serde_json::json!({
-                    "compared": "ffn.input at the same layers and positions: these decode steps against INFER's one-shot pass",
-                    "bit_identical": captured.ffn_input_matches_infer_pass,
-                });
-                (captured.blocks, PATH_DECODE_STEPS, check)
-            }
-            Some(pass_site) => {
-                let blocks = batch::capture(
-                    runtime,
-                    overrides.as_ref(),
-                    &continuation,
-                    &sequence.ids,
-                    pass_site,
-                    &layers,
-                    &positions,
-                )?;
-                (blocks, PATH_INFER_PASS, serde_json::Value::Null)
-            }
-        };
+        let blocks = batch::capture(
+            runtime,
+            overrides.as_ref(),
+            &continuation,
+            &sequence.ids,
+            site,
+            &layers,
+            &positions,
+        )?;
+        let path = PATH_INFER_PASS;
+        let cross_check = serde_json::Value::Null;
         let stacked = matches!(spec.layers, Some(CaptureLayers::Many(_)));
         let shape = checked_shape(&blocks, positions.len(), stacked)?;
 

@@ -277,6 +277,14 @@ impl<T: PlanBackend + Send + ?Sized> PlanBackend for std::sync::Arc<T> {
         (**self).ffn_many(call)
     }
 
+    fn ffn_many_observed(
+        &self,
+        call: FfnManyCall<'_>,
+        tap: &mut dyn FnMut(usize, &[f32]),
+    ) -> Result<Vec<Vec<f32>>, VindexError> {
+        (**self).ffn_many_observed(call, tap)
+    }
+
     fn scale_row(&self, row: &mut [f32], scale: f32) {
         (**self).scale_row(row, scale)
     }

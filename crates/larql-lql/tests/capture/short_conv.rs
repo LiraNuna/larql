@@ -309,10 +309,10 @@ fn short_conv_internal_sites_capture_exact_signals_and_refuse_softmax_layers() {
             "mismatch at flat index {i}"
         );
     }
-    assert_eq!(
-        sidecar(&gated_y_path)["execution"]["cross_check"]["bit_identical"],
-        true
-    );
+    assert!(sidecar(&gated_y_path)["execution"]["path"]
+        .as_str()
+        .unwrap()
+        .contains("one-shot traversal"));
     assert_eq!(sidecar(&gated_y_path)["site"], "short_conv.gated_y");
 
     // Fail-closed refusal when targeting a softmax layer (layer 1).
@@ -486,10 +486,10 @@ fn staged_remove_direction_and_add_low_rank_execute_live_for_infer_and_capture_o
     for p in [&pat_logits, &pat_post_attn, &pat_down_out, &pat_gated_y] {
         assert_eq!(sidecar(p)["executes"], "patched", "{}", p.display());
     }
-    assert_eq!(
-        sidecar(&pat_gated_y)["execution"]["cross_check"]["bit_identical"],
-        true
-    );
+    assert!(sidecar(&pat_gated_y)["execution"]["path"]
+        .as_str()
+        .unwrap()
+        .contains("one-shot traversal"));
 
     // 4. Compiled container matches live patched CAPTURE bit for bit.
     let compiled = fx.path("compiled_hybrid.vindex3");

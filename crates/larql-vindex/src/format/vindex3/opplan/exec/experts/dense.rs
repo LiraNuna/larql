@@ -313,6 +313,28 @@ impl FfnOperands {
                 .collect(),
         }
     }
+
+    /// Dense FFN over several positions at once, capturing the down-projection
+    /// input (`act(gate(x)) ⊙ up(x)`) per position in `tap`. Refuses non-dense FFNs.
+    pub(in super::super) fn apply_dense_many_observed<
+        B: super::super::backend::PlanBackend + ?Sized,
+    >(
+        &self,
+        ffn: &LayerFfn,
+        backend: &B,
+        pre_ffn_normed: &[&[f32]],
+        hidden: usize,
+        tap: &mut dyn FnMut(usize, &[f32]),
+    ) -> Result<Vec<Vec<f32>>, VindexError> {
+        match (self, ffn) {
+            (Self::Dense(dense), LayerFfn::Dense(op)) => {
+                dense.apply_many_observed(op, backend, pre_ffn_normed, hidden, tap)
+            }
+            _ => Err(VindexError::Parse(
+                "ffn.down_input batch capture requires a dense FFN".into(),
+            )),
+        }
+    }
 }
 
 impl DenseOperands {
@@ -398,5 +420,28 @@ impl DenseOperands {
             activation: op.activation,
             gate_policy: op.gate_policy,
         })
+    }
+
+    pub(super) fn apply_many_observed<B: super::super::backend::PlanBackend + ?Sized>(
+        &self,
+        op: &FfnOp,
+        backend: &B,
+        xs: &[&[f32]],
+        hidden: usize,
+        tap: &mut dyn FnMut(usize, &[f32]),
+    ) -> Result<Vec<Vec<f32>>, VindexError> {
+        backend.ffn_many_observed(
+            super::super::backend::FfnManyCall {
+                xs,
+                hidden,
+                intermediate: op.intermediate_size,
+                gate: self.gate.as_ref().map(LoadedWeight::slice),
+                up: self.up.slice(),
+                down: self.down.slice(),
+                activation: op.activation,
+                gate_policy: op.gate_policy,
+            },
+            tap,
+        )
     }
 }

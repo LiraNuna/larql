@@ -193,6 +193,34 @@ pub trait PlanBackend: Sync {
             .collect()
     }
 
+    /// [`Self::ffn_many`] with a per-position tap on the dense down-projection
+    /// input (`act(gate(x)) ⊙ up(x)`), invoked in position order before `down`.
+    fn ffn_many_observed(
+        &self,
+        call: FfnManyCall<'_>,
+        tap: &mut dyn FnMut(usize, &[f32]),
+    ) -> Result<Vec<Vec<f32>>, VindexError> {
+        call.xs
+            .iter()
+            .enumerate()
+            .map(|(p, x)| {
+                self.ffn_observed(
+                    FfnCall {
+                        x,
+                        hidden: call.hidden,
+                        intermediate: call.intermediate,
+                        gate: call.gate,
+                        up: call.up,
+                        down: call.down,
+                        activation: call.activation,
+                        gate_policy: call.gate_policy,
+                    },
+                    &mut |inner| tap(p, inner),
+                )
+            })
+            .collect()
+    }
+
     /// The routed FFN — a mixture of experts. Required of every backend
     /// for the same reason as [`Self::ffn`]: a backend without the
     /// arithmetic must refuse, never borrow it.

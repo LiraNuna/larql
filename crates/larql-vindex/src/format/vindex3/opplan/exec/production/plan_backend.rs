@@ -214,6 +214,14 @@ impl PlanBackend for ProductionBackend {
     /// projection to a single worker — CPU-7C1 measured that as
     /// `slabs/call` 5.03 -> 2.81 and a 42% loss against serial decode.
     fn ffn_many(&self, call: FfnManyCall<'_>) -> Result<Vec<Vec<f32>>, VindexError> {
+        self.ffn_many_observed(call, &mut |_, _| {})
+    }
+
+    fn ffn_many_observed(
+        &self,
+        call: FfnManyCall<'_>,
+        tap: &mut dyn FnMut(usize, &[f32]),
+    ) -> Result<Vec<Vec<f32>>, VindexError> {
         require_executable_gate("production", call.gate_policy)?;
         let ups = project_matrix_many(&call.up, call.xs, call.intermediate, call.hidden)?;
         let gates = match &call.gate {
@@ -235,6 +243,9 @@ impl PlanBackend for ProductionBackend {
                 )
             })
             .collect::<Result<_, _>>()?;
+        for (p, inner) in inners.iter().enumerate() {
+            tap(p, inner);
+        }
         let refs: Vec<&[f32]> = inners.iter().map(Vec::as_slice).collect();
         project_matrix_many(&call.down, &refs, call.hidden, call.intermediate)
     }

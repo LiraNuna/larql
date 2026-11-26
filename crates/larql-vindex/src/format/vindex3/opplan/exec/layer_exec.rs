@@ -45,6 +45,7 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
     base: usize,
     sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
     mutation: Mutation,
+    mut taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
 ) -> Result<LayerTrace, VindexError> {
     // ── Attention site: enter ──
     //
@@ -237,7 +238,21 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
             let weights = ops.weights()?;
             let projector = consuming_projector(backend.dense_projector(), &weights, layer.layer)?;
             let state = provider.recurrent_state(layer_index)?;
-            short_conv::layer_forward_with(&ops.op, &weights, &inputs, state, projector).output
+            if let Some((req, out)) = taps.as_mut() {
+                if req.short_conv.contains(&index) {
+                    let mut planes = short_conv::layer_forward_with_planes(
+                        &ops.op, &weights, &inputs, state, projector,
+                    );
+                    let attn_output = std::mem::take(&mut planes.output);
+                    out.short_conv.insert(index, planes);
+                    attn_output
+                } else {
+                    short_conv::layer_forward_with(&ops.op, &weights, &inputs, state, projector)
+                        .output
+                }
+            } else {
+                short_conv::layer_forward_with(&ops.op, &weights, &inputs, state, projector).output
+            }
         }
         PreparedAttention::Kda(ops) => {
             let Some((provider, layer_index)) = kv else {
@@ -484,7 +499,25 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
     // Remote experts take the grouped arm unconditionally: one exchange per
     // worker per layer is what placement means for a block, and it must not
     // depend on a switch that exists to measure a local scheduling shape.
-    let ffn_outs: Vec<Vec<f32>> = if multi_position_ffn() || ffn.groups_remote_rows() {
+    let want_down_in = taps
+        .as_ref()
+        .is_some_and(|(req, _)| req.ffn_down_input.contains(&index));
+    let want_down_out = taps
+        .as_ref()
+        .is_some_and(|(req, _)| req.ffn_down_output.contains(&index));
+    let ffn_outs: Vec<Vec<f32>> = if want_down_in {
+        let _site = cpu::ledger::in_site(cpu::ledger::Site::Ffn);
+        let normed: Vec<&[f32]> = ffn_inputs.iter().map(Vec::as_slice).collect();
+        let mut down_inputs: Vec<Vec<f32>> = vec![Vec::new(); normed.len()];
+        let outs =
+            ffn.apply_dense_many_observed(ffn_op, backend, &normed, hidden, &mut |pos, inner| {
+                down_inputs[pos] = inner.to_vec();
+            })?;
+        if let Some((_, out)) = taps.as_mut() {
+            out.ffn_down_input.insert(index, down_inputs);
+        }
+        outs
+    } else if multi_position_ffn() || ffn.groups_remote_rows() {
         // **CPU-7C2.** One call for every position, rather than a parallel
         // loop over positions each re-entering the executor.
         //
@@ -515,6 +548,11 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
             })
             .collect::<Result<Vec<_>, _>>()?
     };
+    if want_down_out {
+        if let Some((_, out)) = taps.as_mut() {
+            out.ffn_down_output.insert(index, ffn_outs.clone());
+        }
+    }
     // The glue AFTER it stays position-parallel: norms, scaling and the
     // update are elementwise and issue no projections, so there is no
     // ownership to collapse.

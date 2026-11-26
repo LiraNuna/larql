@@ -62,6 +62,21 @@ pub struct ShortConvPlanes {
     pub output: Vec<Vec<f32>>,
 }
 
+/// Output + internal per-position planes of one ShortConv batch forward pass.
+#[derive(Debug, Default)]
+pub struct ShortConvBatchPlanes {
+    /// `[T][hidden_size]` output after `out_proj`.
+    pub output: Vec<Vec<f32>>,
+    /// `[T][hidden_size]` input gate `B`.
+    pub gate_b: Vec<Vec<f32>>,
+    /// `[T][hidden_size]` output gate `C`.
+    pub gate_c: Vec<Vec<f32>>,
+    /// `[T][hidden_size]` causal depthwise conv1d output `conv(B * x)`.
+    pub conv_out: Vec<Vec<f32>>,
+    /// `[T][hidden_size]` pre-`out_proj` gated activation `C * conv(B * x)`.
+    pub gated_y: Vec<Vec<f32>>,
+}
+
 /// Execute one ShortConv layer over `hidden` (`[T][D]`), advancing `state` in place.
 pub fn layer_forward_with(
     op: &ShortConvOp,
@@ -127,6 +142,86 @@ pub fn layer_forward_with(
     }
 
     ShortConvPlanes { output }
+}
+
+/// Execute one ShortConv layer over `hidden` (`[T][D]`), advancing `state` in
+/// place and returning `output` plus the internal `gate_b`, `gate_c`,
+/// `conv_out`, and `gated_y` planes. Arithmetic is identical to
+/// [`layer_forward_with`].
+pub fn layer_forward_with_planes(
+    op: &ShortConvOp,
+    w: &ShortConvWeights<'_>,
+    hidden: &[Vec<f32>],
+    state: &mut RecurrentState,
+    proj: &dyn DenseProjections,
+) -> ShortConvBatchPlanes {
+    let d = op.hidden_size;
+    let l_cache = op.conv_l_cache;
+    let t_len = hidden.len();
+    if t_len == 0 {
+        return ShortConvBatchPlanes::default();
+    }
+    let _site = super::cpu::ledger::in_site(super::cpu::ledger::Site::Recurrent);
+
+    let rows: Vec<&[f32]> = hidden.iter().map(Vec::as_slice).collect();
+    let mut mixed = proj.project_many(w.in_proj, &rows, 3 * d);
+    if let Some(bias) = w.in_proj_bias {
+        for row in &mut mixed {
+            for (v, &b) in row.iter_mut().zip(bias) {
+                *v += b;
+            }
+        }
+    }
+
+    let mut gate_b: Vec<Vec<f32>> = Vec::with_capacity(t_len);
+    let mut gate_c: Vec<Vec<f32>> = Vec::with_capacity(t_len);
+    let mut conv_out: Vec<Vec<f32>> = vec![vec![0.0; d]; t_len];
+    let mut gated: Vec<Vec<f32>> = vec![vec![0.0; d]; t_len];
+    let convolution = timed(OpClass::DeltaConv);
+    let cells = state.buffer_mut(CONV_STATE).cells_mut();
+    for t in 0..t_len {
+        let b_vec = &mixed[t][..d];
+        let c_vec = &mixed[t][d..2 * d];
+        let x_vec = &mixed[t][2 * d..3 * d];
+        gate_b.push(b_vec.to_vec());
+        gate_c.push(c_vec.to_vec());
+        let conv_row = &mut conv_out[t];
+        let y_row = &mut gated[t];
+        for ch in 0..d {
+            let bx = b_vec[ch] * x_vec[ch];
+            let state_row = &mut cells[ch * l_cache..(ch + 1) * l_cache];
+            if l_cache > 1 {
+                state_row.copy_within(1..l_cache, 0);
+            }
+            state_row[l_cache - 1] = bx;
+            let taps = &w.conv_weight[ch * l_cache..(ch + 1) * l_cache];
+            let mut acc = w.conv_bias.map_or(0.0, |b| b[ch]);
+            for i in 0..l_cache {
+                acc += state_row[i] * taps[i];
+            }
+            conv_row[ch] = acc;
+            y_row[ch] = c_vec[ch] * acc;
+        }
+    }
+    drop(convolution);
+
+    let gated_refs: Vec<&[f32]> = gated.iter().map(Vec::as_slice).collect();
+    let mut output = proj.project_many(w.out_proj, &gated_refs, d);
+    if let Some(bias) = w.out_proj_bias {
+        for row in &mut output {
+            for (v, &b) in row.iter_mut().zip(bias) {
+                *v += b;
+            }
+        }
+    }
+
+    ShortConvBatchPlanes {
+        output,
+        gate_b,
+        gate_c,
+        conv_out,
+        gated_y: gated,
+    }
 }
 
 /// Borrowed callback invoked with each `ShortConv` layer's pre-`out_proj` activations.

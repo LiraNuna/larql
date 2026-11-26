@@ -93,10 +93,7 @@ fn the_down_projection_is_captured_under_the_patch_too() {
         bits(&read_npy(&base).values),
         bits(&read_npy(&patched).values)
     );
-    assert_eq!(
-        sidecar(&patched)["execution"]["cross_check"]["bit_identical"],
-        true
-    );
+    assert_eq!(sidecar(&patched)["executes"], "patched");
 
     let compiled = fx.path("compiled.vindex3");
     run(

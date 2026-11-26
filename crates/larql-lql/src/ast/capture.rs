@@ -2,7 +2,7 @@
 //! which of its positions.
 
 /// Where `CAPTURE` reads the values the executor computed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CaptureSite {
     /// The residual after a layer: what the next layer reads.
     Residual,

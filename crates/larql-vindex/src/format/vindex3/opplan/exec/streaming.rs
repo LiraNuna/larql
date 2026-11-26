@@ -94,6 +94,23 @@ pub(super) fn execute_prepared_streaming_with<B: PlanBackend + ?Sized>(
     state: Option<&mut dyn KvState>,
     mutation: Mutation,
 ) -> Result<FinalOutput, VindexError> {
+    execute_prepared_streaming_with_taps(
+        plan, ops, tokens, backend, resume, sink, state, mutation, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_prepared_streaming_with_taps<B: PlanBackend + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
+    tokens: &[u32],
+    backend: &B,
+    resume: Option<ResumePoint>,
+    sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
+    state: Option<&mut dyn KvState>,
+    mutation: Mutation,
+    taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
+) -> Result<FinalOutput, VindexError> {
     // A pin whose provider has gone or changed invalidates the image;
     // nothing here falls back to another realization. The registry is
     // the image's own — the store's — never a built-in default.
@@ -120,7 +137,7 @@ pub(super) fn execute_prepared_streaming_with<B: PlanBackend + ?Sized>(
         state.prepare_continuation(
             &continuation::plan_continuation_geometry(plan).map_err(VindexError::Parse)?,
         )?;
-        return traverse(
+        return traverse_with_taps(
             plan,
             ops,
             tokens,
@@ -129,6 +146,7 @@ pub(super) fn execute_prepared_streaming_with<B: PlanBackend + ?Sized>(
             sink,
             Some(state),
             mutation,
+            taps,
         );
     }
     // Without state, only a wholly-softmax stack can run: `None` keeps its
@@ -144,7 +162,7 @@ pub(super) fn execute_prepared_streaming_with<B: PlanBackend + ?Sized>(
              the `_in` form of this call"
         )));
     }
-    traverse(
+    traverse_with_taps(
         plan,
         ops,
         tokens,
@@ -153,6 +171,7 @@ pub(super) fn execute_prepared_streaming_with<B: PlanBackend + ?Sized>(
         sink,
         None::<&mut dyn KvState>,
         mutation,
+        taps,
     )
 }
 

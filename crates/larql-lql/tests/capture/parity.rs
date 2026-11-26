@@ -160,12 +160,14 @@ fn the_down_input_is_the_decode_steps_own_capture() {
             assert_eq!(bits(&got[row]), bits(direct.get(layer, position).unwrap()));
         }
     }
-    let check = &sidecar(&out)["execution"]["cross_check"];
-    assert_eq!(check["bit_identical"], true, "{check}");
+    assert_eq!(
+        sidecar(&out)["execution"]["cross_check"],
+        serde_json::Value::Null
+    );
     assert!(sidecar(&out)["execution"]["path"]
         .as_str()
         .unwrap()
-        .contains("decode steps"));
+        .contains("one-shot traversal"));
 }
 
 #[test]

@@ -28,8 +28,23 @@ pub(super) fn traverse<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
     backend: &B,
     resume: Option<ResumePoint>,
     sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
+    kv: Option<&mut K>,
+    mutation: Mutation,
+) -> Result<FinalOutput, VindexError> {
+    traverse_with_taps(plan, ops, tokens, backend, resume, sink, kv, mutation, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn traverse_with_taps<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
+    tokens: &[u32],
+    backend: &B,
+    resume: Option<ResumePoint>,
+    sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
     mut kv: Option<&mut K>,
     mutation: Mutation,
+    mut taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
 ) -> Result<FinalOutput, VindexError> {
     // A state a failed advance left unusable is refused by every traversal,
     // batch or block, before it is read or written.
@@ -301,6 +316,7 @@ pub(super) fn traverse<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
             base,
             sink,
             mutation,
+            taps.as_mut().map(|(req, out)| (*req, &mut **out)),
         )?;
         sink(PlaneEvent::Layer { index, trace })?;
     }
