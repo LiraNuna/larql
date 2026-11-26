@@ -56,8 +56,9 @@ pub mod operations {
     };
     pub use super::vindex3::{
         npy_file_bytes, operand_bits_from_values, operand_origin, CaptureGeometry, CaptureSpec,
-        Captured, DiscardedWeightEdits, EditedElement, Generated, NpyDescr, OperandValues,
-        Prediction, Predictions, StagedLowRank, StagedWeightDelta, WeightRead,
+        Captured, DiscardedWeightEdits, DlaColumnRow, DlaLayerRow, DlaReport, EditedElement,
+        Generated, NpyDescr, OperandValues, Prediction, Predictions, StagedLowRank,
+        StagedWeightDelta, WeightRead,
     };
     pub use crate::ast::{CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite};
     pub use larql_vindex::format::vindex3::stored_tensor::{BareName, TensorListing};
@@ -650,6 +651,13 @@ impl Session {
                 *positions,
                 save.as_deref(),
             ),
+            Statement::Dla {
+                prompt,
+                target_a,
+                target_b,
+                layers,
+                top_columns,
+            } => self.exec_dla(prompt, target_a, target_b, layers.as_ref(), *top_columns),
         }
     }
 

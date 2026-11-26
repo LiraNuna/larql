@@ -69,6 +69,7 @@ topic_enum! {
         Explain,
         Trace,
         Capture,
+        Dla,
         // Edit weights
         UpdateWeights,
         RemoveDirection,

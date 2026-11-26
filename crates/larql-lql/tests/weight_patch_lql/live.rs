@@ -24,10 +24,7 @@ fn a_patch_executes_from_apply_until_remove_and_the_base_returns_exactly() {
 
         let applied = apply(&mut s, &vlp);
         assert!(
-            has(
-                &applied,
-                "In effect for INFER, TRACE and CAPTURE in this session"
-            ),
+            has(&applied, larql_lql::live_scope::IN_EFFECT),
             "{kind:?}: {applied:?}"
         );
         let patched = printed(&mut s);
@@ -62,10 +59,7 @@ fn a_directly_staged_op_executes_too() {
         let base = infer(&mut s);
         let staged = run(&mut s, &statement(&fx, kind, COLUMNS_A, "direct.json"));
         assert!(
-            has(
-                &staged,
-                "In effect for INFER, TRACE and CAPTURE in this session"
-            ),
+            has(&staged, larql_lql::live_scope::IN_EFFECT),
             "{kind:?}: {staged:?}"
         );
         assert_ne!(infer(&mut s), base, "{kind:?}");
@@ -119,10 +113,7 @@ fn a_discard_leaves_an_applied_patch_executing_and_nothing_of_the_discarded_op()
 
         let discarded = run(&mut s, "DISCARD WEIGHT EDITS;");
         assert!(
-            has(
-                &discarded,
-                "In effect for INFER, TRACE and CAPTURE in this session"
-            ),
+            has(&discarded, larql_lql::live_scope::IN_EFFECT),
             "{kind:?}: the patch's op is still in effect: {discarded:?}"
         );
         assert_eq!(
@@ -443,9 +434,13 @@ fn the_replies_say_what_executes_and_that_nothing_on_disk_changed() {
         &mut s,
         &statement(&fx, Kind::UpdateWeights, COLUMNS_A, "unused.json"),
     );
-    for needle in [
-        "In effect for INFER, TRACE and CAPTURE in this session: 1 tensor(s) execute from patched bytes held in memory, \
+    let in_effect_banner = format!(
+        "{}: 1 tensor(s) execute from patched bytes held in memory, \
          not from the container's stored bytes.",
+        larql_lql::live_scope::IN_EFFECT
+    );
+    for needle in [
+        in_effect_banner.as_str(),
         "Nothing on disk has changed: COMPILE CURRENT INTO VINDEX writes a container that stores exactly these bytes.",
         "DESCRIBE, WALK, SELECT and DIFF read the stored weights.",
         TENSOR,
@@ -455,7 +450,7 @@ fn the_replies_say_what_executes_and_that_nothing_on_disk_changed() {
     assert!(!has(&staged, "does not see it"), "{staged:?}");
     let shown = run(&mut s, "SHOW PATCHES;");
     assert!(
-        has(&shown, "pending COMPILE") && has(&shown, "In effect for INFER, TRACE and CAPTURE"),
+        has(&shown, "pending COMPILE") && has(&shown, larql_lql::live_scope::IN_EFFECT),
         "{shown:?}"
     );
 

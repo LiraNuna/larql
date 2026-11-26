@@ -11,7 +11,7 @@
 /// The statements that compute with pending stored-weight ops (or are refused), as prose.
 macro_rules! executed_by {
     () => {
-        "INFER, TRACE and CAPTURE"
+        "INFER, TRACE, CAPTURE and DLA"
     };
 }
 

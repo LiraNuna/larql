@@ -60,6 +60,7 @@ impl Statement {
             Statement::ShowPatches => StatementTopic::ShowPatches,
             Statement::RemovePatch { .. } => StatementTopic::RemovePatch,
             Statement::Trace { .. } => StatementTopic::Trace,
+            Statement::Dla { .. } => StatementTopic::Dla,
             Statement::Help { .. } => StatementTopic::Help,
             Statement::Pipe { .. } => StatementTopic::Pipe,
         }

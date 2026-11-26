@@ -41,6 +41,7 @@ pub fn statement(topic: StatementTopic) -> &'static StatementHelp {
         StatementTopic::Explain => &run::EXPLAIN,
         StatementTopic::Trace => &run::TRACE,
         StatementTopic::Capture => &run::CAPTURE,
+        StatementTopic::Dla => &run::DLA,
         StatementTopic::UpdateWeights => &weights::UPDATE_WEIGHTS,
         StatementTopic::RemoveDirection => &weights::REMOVE_DIRECTION,
         StatementTopic::AddLowRank => &weights::ADD_LOW_RANK,

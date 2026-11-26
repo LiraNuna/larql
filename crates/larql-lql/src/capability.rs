@@ -148,7 +148,8 @@ fn public_explorer_check(stmt: &Statement) -> Result<(), LqlError> {
         | ApplyPatch { .. }
         | ShowPatches
         | RemovePatch { .. }
-        | Trace { .. } => Err(LqlError::Refused {
+        | Trace { .. }
+        | Dla { .. } => Err(LqlError::Refused {
             profile: CapabilityProfile::PublicExplorer.name().into(),
             statement: stmt.verb().into(),
             served: PUBLIC_EXPLORER_SERVES.into(),
@@ -225,6 +226,7 @@ mod tests {
             "REMOVE PATCH \"p.vlp\";",
             "SHOW COMPACT STATUS;",
             "TRACE \"paris\";",
+            "DLA \"paris\" FOR \"a\" VS \"b\";",
         ] {
             let err = check_public(stmt).expect_err(stmt);
             assert!(

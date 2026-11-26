@@ -71,6 +71,7 @@ impl Statement {
             | Statement::ApplyPatch { .. }
             | Statement::ShowPatches
             | Statement::RemovePatch { .. }
+            | Statement::Dla { .. }
             | Statement::Help { .. } => false,
         }
     }

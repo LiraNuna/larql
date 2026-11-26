@@ -201,5 +201,43 @@ pub(super) static CAPTURE: StatementHelp = StatementHelp {
         "An output that does not end in .npy, or an output or sidecar that already exists: nothing is overwritten.",
         "After a failed statement in a batch (HELP BATCH;).",
     ],
-    related: &["INFER", "TRACE", "EXPORT WEIGHT", "APPLY PATCH", "BATCH"],
+    related: &["INFER", "TRACE", "DLA", "EXPORT WEIGHT", "APPLY PATCH", "BATCH"],
+};
+
+pub(super) static DLA: StatementHelp = StatementHelp {
+    name: "DLA",
+    aliases: &[],
+    group: HelpGroup::Run,
+    syntax: &[
+        "DLA \"<prompt>\" FOR \"<token_a>\" VS \"<token_b>\" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (<n>, ...)] [TOP <k> [COLUMNS]];",
+    ],
+    does: &[
+        "Computes exact Direct Logit Attribution for logit(token_a) - logit(token_b) at the prompt's",
+        "final position in a single forward pass over the already-loaded VINDEX3 weights.",
+        "Decomposes the pre-softcap logit difference additively into embedding + per-layer operator",
+        "(attention or ShortConv/mixer) + per-layer FFN contributions using the linearized final norm.",
+        "With TOP <k> COLUMNS, also linearizes each dense FFN's post-FFN norm (and residual/layer scale)",
+        "to attribute each layer's FFN contribution down to individual W_down columns and prints the",
+        "top <k> columns ranked by |Col DLA| across the requested layers.",
+    ],
+    examples: &[
+        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\";",
+        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" LAYERS 0-23 TOP 12 COLUMNS;",
+        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" AT LAYERS (20, 22, 23) TOP 8 COLUMNS;",
+    ],
+    needs: &[Need::Vindex3, Need::Tokenizer],
+    effect: &[
+        "Read-only.",
+        concat!(executed_by!(), " run the same program: DLA computes with pending stored-weight ops,"),
+        "or is refused, exactly as INFER is.",
+    ],
+    operands: &[],
+    refusals: &[
+        "The session is bound to something other than a VINDEX3 container, or the container carries no tokenizer.json.",
+        "FOR or VS encodes to zero or more than one token, or lies outside the vocabulary.",
+        "A layer outside the program or listed twice, or TOP 0.",
+        "A component without an output head, or with a non-single-stream residual topology.",
+        "Pending stored-weight ops the session cannot execute exactly (HELP UPDATE WEIGHTS; lists when).",
+    ],
+    related: &["INFER", "CAPTURE", "TRACE", "REMOVE DIRECTION", "UPDATE WEIGHTS"],
 };

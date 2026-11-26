@@ -2,6 +2,7 @@
 
 use crate::help::entry::{GroupHelp, Need, StatementHelp};
 use crate::help::topic::HelpGroup;
+use crate::live_scope::executed_by;
 
 pub(super) static GROUP: GroupHelp = GroupHelp {
     name: "KNOWLEDGE",
@@ -13,7 +14,7 @@ pub(super) static GROUP: GroupHelp = GroupHelp {
         "tokenizer. The base files are never modified.",
         "Without BEGIN PATCH they start an anonymous recording, which BEGIN PATCH then adopts.",
         "COMPILE refuses knowledge edits and stored-weight ops in one container, and while both are",
-        "pending INFER, TRACE and CAPTURE are refused too (HELP WEIGHTS;).",
+        concat!("pending ", executed_by!(), " are refused too (HELP WEIGHTS;)."),
     ],
 };
 

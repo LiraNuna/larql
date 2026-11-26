@@ -336,6 +336,16 @@ pub enum Statement {
         save: Option<String>,
     },
 
+    // ── Direct Logit Attribution ──
+    /// `DLA "<prompt>" FOR "<token_a>" VS "<token_b>" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (...)] [TOP <k> [COLUMNS]];`
+    Dla {
+        prompt: String,
+        target_a: String,
+        target_b: String,
+        layers: Option<CaptureLayers>,
+        top_columns: Option<u32>,
+    },
+
     // ── Help ──
     /// `HELP;` prints every statement's syntax; `HELP <topic>;` prints one page of the help catalogue
     /// (`crate::help`). `topic` is the words after `HELP`, as written. Read-only, and it needs no backend.
@@ -400,6 +410,7 @@ impl Statement {
             Statement::ShowPatches => "SHOW PATCHES",
             Statement::RemovePatch { .. } => "REMOVE PATCH",
             Statement::Trace { .. } => "TRACE",
+            Statement::Dla { .. } => "DLA",
             Statement::Help { .. } => "HELP",
             Statement::Pipe { .. } => "|> (pipe)",
         }
