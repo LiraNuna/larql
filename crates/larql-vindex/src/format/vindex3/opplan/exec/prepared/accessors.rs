@@ -25,6 +25,11 @@ impl PreparedOperands {
             ));
         }
         for layer in &mut self.layers {
+            let layer = std::sync::Arc::get_mut(layer).ok_or_else(|| {
+                VindexError::Parse(
+                    "cannot bind dense FFN provider on a shared prepared image".into(),
+                )
+            })?;
             if let Some(FfnOperands::External { provider: slot, .. }) = &mut layer.ffn {
                 *slot = Some(provider.clone());
             }
@@ -73,6 +78,11 @@ impl PreparedOperands {
             ));
         }
         for layer in &mut self.layers {
+            let layer = std::sync::Arc::get_mut(layer).ok_or_else(|| {
+                VindexError::Parse(
+                    "cannot bind routed expert provider on a shared prepared image".into(),
+                )
+            })?;
             if let Some(ffn) = &mut layer.ffn {
                 ffn.bind_routed_provider(provider.clone())?;
             }
@@ -363,6 +373,7 @@ impl PreparedOperands {
         layer
             .checked_sub(first)
             .and_then(|offset| self.layers.get(offset))
+            .map(std::sync::Arc::as_ref)
             .ok_or_else(|| {
                 VindexError::Parse(format!(
                     "layer {layer} is outside this image's executed layers {first}..{}",
@@ -434,6 +445,9 @@ impl PreparedOperands {
             }
         }
         for layer in &mut self.layers {
+            let layer = std::sync::Arc::get_mut(layer).ok_or_else(|| {
+                VindexError::Parse("cannot change rope angles on a shared prepared image".into())
+            })?;
             if let PreparedAttention::Softmax(ops) = &mut layer.attention {
                 ops.rope_angles = angles;
             }
@@ -472,7 +486,7 @@ impl PreparedOperands {
         let normalized = self.normalize_carrier_for_readout(backend, carrier)?;
         let (op, weight) = self
             .output
-            .as_ref()
+            .as_deref()
             .expect("normalization requires an output head");
         backend.output_head(
             weight.slice(),
@@ -493,7 +507,7 @@ impl PreparedOperands {
     pub fn select_output_head(&self, token_ids: &[u32]) -> Result<SelectedOutputHead, VindexError> {
         let (op, weight) = self
             .output
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| VindexError::Parse("prepared slice has no output head".into()))?;
         SelectedOutputHead::gather(
             weight.slice(),
@@ -558,7 +572,7 @@ impl PreparedOperands {
     }
 
     pub(in super::super) fn embed_table(&self) -> Option<&[f32]> {
-        self.embed_table.as_deref()
+        self.embed_table.as_deref().map(Vec::as_slice)
     }
 
     pub(in super::super) fn first_layer(&self) -> usize {
@@ -576,7 +590,7 @@ impl PreparedOperands {
         self.first_layer..self.first_layer + self.layers.len()
     }
 
-    pub(in super::super) fn layers(&self) -> &[PreparedLayer] {
+    pub(in super::super) fn layers(&self) -> &[std::sync::Arc<PreparedLayer>] {
         &self.layers
     }
 
@@ -585,7 +599,7 @@ impl PreparedOperands {
     }
 
     pub(in super::super) fn output(&self) -> Option<&(OutputOp, LoadedWeight)> {
-        self.output.as_ref()
+        self.output.as_deref()
     }
 
     /// The declared hyper-connection topology this image was prepared

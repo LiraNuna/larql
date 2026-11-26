@@ -364,15 +364,15 @@ pub struct PreparedOperands {
     pub(super) slice: ExecutionSlice,
     pub(super) hidden: usize,
     /// Present only for a slice that carries the stack's input end.
-    pub(super) embed_table: Option<Vec<f32>>,
+    pub(super) embed_table: Option<std::sync::Arc<Vec<f32>>>,
     /// Plan index of `layers[0]`, so a sliced image can still address
     /// the plan's per-layer ops and the KV state's layer rows.
     pub(super) first_layer: usize,
-    pub(super) layers: Vec<PreparedLayer>,
+    pub(super) layers: Vec<std::sync::Arc<PreparedLayer>>,
     pub(super) dense_ffns: Option<super::super::dense_ffn::PreparedDenseFfns>,
     pub(super) routed_experts: Option<super::super::routed_experts::PreparedRoutedExperts>,
     pub(super) final_norm: Option<PreparedNorm>,
-    pub(super) output: Option<(OutputOp, LoadedWeight)>,
+    pub(super) output: Option<std::sync::Arc<(OutputOp, LoadedWeight)>>,
     /// One pinned realization per planned operand this image executes,
     /// in the plan's order — the record the trace reads.
     pub(super) realizations: Vec<RealizationRecord>,

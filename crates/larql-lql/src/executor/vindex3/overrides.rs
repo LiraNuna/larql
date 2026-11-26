@@ -27,15 +27,22 @@ pub(crate) struct CachedPrepared {
 
 /// Session-resident cache of lowered `PreparedOperands` and shared-prefix continuation
 /// snapshots, shared across `INFER`, `GENERATE`, `CAPTURE`, and `DLA`.
+///
+/// Keeps the unpatched `base` image resident across live weight edits so staging or changing
+/// a patch reuses every untouched layer, the embedding table, and the output head via
+/// [`PreparedOperands::load_reusing`], and `DISCARD WEIGHT EDITS` returns to `base` in 0ms.
 #[derive(Default)]
 pub(crate) struct PreparedCache {
-    slot: Mutex<Option<CachedPrepared>>,
+    base: Mutex<Option<Arc<PreparedOperands>>>,
+    patched: Mutex<Option<CachedPrepared>>,
     prefix: super::prefix_cache::PrefixStateCache,
 }
 
 impl PreparedCache {
-    pub(crate) fn clear(&self) {
-        if let Ok(mut guard) = self.slot.lock() {
+    /// Drop the active patched image and prefix snapshots while keeping the unpatched `base`
+    /// image resident for fast incremental re-preparation.
+    pub(crate) fn clear_patched(&self) {
+        if let Ok(mut guard) = self.patched.lock() {
             *guard = None;
         }
         self.prefix.clear();
@@ -53,8 +60,9 @@ pub(crate) type SessionPrepared = (
 );
 
 /// Resolve and return resident [`PreparedOperands`] for the session's current weight state,
-/// reusing the cached image when the live patched-tensor digests match and rebuilding (and
-/// verifying every patched tensor was read through the operand seam) on a cache miss.
+/// reusing the cached image when the live patched-tensor digests match, incrementally reusing
+/// untouched layers from `base` when a patch is active, and verifying every patched tensor was
+/// read through the operand seam on a cache miss.
 /// Compose vector edits bypass both the operand and prefix caches (`cache_key == None`).
 pub(crate) fn prepared_operands_for_session(
     runtime: &V3Runtime,
@@ -94,13 +102,31 @@ pub(crate) fn prepared_operands_for_session(
     };
     let key = PreparedCacheKey { patched_tensors };
 
+    // Unpatched base model path: reuse `cache.base` directly (0ms on DISCARD WEIGHT EDITS).
+    if key.patched_tensors.is_empty() {
+        if let Some(base) = cache.base.lock().unwrap().as_ref() {
+            return Ok((Arc::clone(base), overrides, Some(key)));
+        }
+        let ops = Arc::new(
+            PreparedOperands::load(
+                runtime.plan(),
+                runtime.operands(),
+                runtime.backend(),
+                ExecutionSlice::Full,
+            )
+            .map_err(|e| LqlError::exec("prepare operands failed", e))?,
+        );
+        *cache.base.lock().unwrap() = Some(Arc::clone(&ops));
+        return Ok((ops, overrides, Some(key)));
+    }
+
+    // Patched model path: hit `cache.patched` if same digest set, otherwise release previous
+    // patched layer(s) and incrementally rebuild over `cache.base` when available.
     {
-        let mut guard = cache.slot.lock().unwrap();
+        let mut guard = cache.patched.lock().unwrap();
         if let Some(entry) = guard.as_ref().filter(|e| e.key == key) {
             return Ok((Arc::clone(&entry.operands), overrides, Some(key)));
         }
-        // Release the previous resident image and prefix snapshots before allocating the
-        // replacement so peak RAM stays bounded to one prepared image during patch sweeps.
         *guard = None;
         cache.prefix.clear();
     }
@@ -109,17 +135,26 @@ pub(crate) fn prepared_operands_for_session(
         Some(ov) => OperandSource::overlaid(runtime.store(), ov),
         None => runtime.operands(),
     };
-    let ops = Arc::new(
-        PreparedOperands::load(
+    let base_ref = cache.base.lock().unwrap().as_ref().map(Arc::clone);
+    let ops = Arc::new(match base_ref {
+        Some(ref base) => PreparedOperands::load_reusing(
+            runtime.plan(),
+            source,
+            runtime.backend(),
+            ExecutionSlice::Full,
+            base,
+        )
+        .map_err(|e| LqlError::exec("prepare operands failed", e))?,
+        None => PreparedOperands::load(
             runtime.plan(),
             source,
             runtime.backend(),
             ExecutionSlice::Full,
         )
         .map_err(|e| LqlError::exec("prepare operands failed", e))?,
-    );
+    });
     confirm_patched_weights_ran(overrides.as_ref())?;
-    *cache.slot.lock().unwrap() = Some(CachedPrepared {
+    *cache.patched.lock().unwrap() = Some(CachedPrepared {
         key: key.clone(),
         operands: Arc::clone(&ops),
     });

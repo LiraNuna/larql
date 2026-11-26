@@ -70,8 +70,9 @@ impl Session {
         else {
             return Vec::new();
         };
-        // Release any resident prepared operands for the prior patch set right away.
-        prepared_cache.clear();
+        // Release any patched prepared image and prefix snapshots right away, keeping the
+        // unpatched base model resident so incremental edits only re-prepare touched layers.
+        prepared_cache.clear_patched();
         let binding = ExecutionBinding {
             container: path,
             plan: runtime.plan(),

@@ -58,6 +58,36 @@ impl PreparedOperands {
         Self::load_validated(plan, store, backend, slice, budget)
     }
 
+    /// [`Self::load`] reusing untouched layers, the embedding table, and the output head
+    /// from an already-prepared `base` image via `Arc::clone`. Any layer (or endpoint)
+    /// containing a patched/overridden tensor or whose pinned realization changed is reloaded
+    /// through `store` so every live-patch seam witness stays fully verified.
+    pub fn load_reusing<'s, B: PlanBackend + ?Sized>(
+        plan: &ComponentOpPlan,
+        store: impl Into<OperandSource<'s>>,
+        backend: &B,
+        slice: ExecutionSlice,
+        base: &PreparedOperands,
+    ) -> Result<Self, VindexError> {
+        let store = store.into();
+        slice.validate(plan)?;
+        let reuse = (slice == ExecutionSlice::Full
+            && base.slice == ExecutionSlice::Full
+            && base.first_layer == 0
+            && base.layers.len() == plan.layers.len()
+            && base.topology == plan.residual_topology
+            && std::ptr::eq(base.registry, store.registry()))
+        .then_some(base);
+        Self::load_validated_with_reuse(
+            plan,
+            store,
+            backend,
+            slice,
+            &ResidencyBudget::UNBOUNDED,
+            reuse,
+        )
+    }
+
     /// The loader proper, past slice validation. Every operand the slice
     /// needs is loaded here, and none of it is loaded again.
     pub(super) fn load_validated<B: PlanBackend + ?Sized>(
@@ -66,6 +96,17 @@ impl PreparedOperands {
         backend: &B,
         slice: ExecutionSlice,
         budget: &ResidencyBudget,
+    ) -> Result<Self, VindexError> {
+        Self::load_validated_with_reuse(plan, store, backend, slice, budget, None)
+    }
+
+    fn load_validated_with_reuse<B: PlanBackend + ?Sized>(
+        plan: &ComponentOpPlan,
+        store: OperandSource<'_>,
+        backend: &B,
+        slice: ExecutionSlice,
+        budget: &ResidencyBudget,
+        reuse: Option<&PreparedOperands>,
     ) -> Result<Self, VindexError> {
         let stamp = store.stamp();
         let whole = slice.is_whole_stack();
@@ -142,7 +183,17 @@ impl PreparedOperands {
             return Ok(prepared);
         }
         let embed_table = if whole {
-            Some(store.load(&embedding.table)?)
+            let can_reuse_embed = reuse.is_some()
+                && !store.is_patched(&embedding.table)
+                && !store.is_overridden(&embedding.table);
+            if let Some(existing) = reuse
+                .filter(|_| can_reuse_embed)
+                .and_then(|b| b.embed_table.as_ref())
+            {
+                Some(std::sync::Arc::clone(existing))
+            } else {
+                Some(std::sync::Arc::new(store.load(&embedding.table)?))
+            }
         } else {
             None
         };
@@ -176,6 +227,12 @@ impl PreparedOperands {
         let mut layers = Vec::with_capacity(range.len());
         for index in range.clone() {
             let layer = &plan.layers[index];
+            if let Some(base) = reuse {
+                if layer_reusable(layer, index, &realizations, &base.realizations, store) {
+                    layers.push(std::sync::Arc::clone(&base.layers[index]));
+                    continue;
+                }
+            }
             // A packed bank's realization is pinned per layer; a layer
             // with no bank never reads the value, and gets the widened
             // form so nothing compact is implied.
@@ -188,7 +245,7 @@ impl PreparedOperands {
                     access: super::super::realization::MappedAccess::Demand,
                 },
             };
-            layers.push(PreparedLayer {
+            layers.push(std::sync::Arc::new(PreparedLayer {
                 // Absent under post-norm placement: the sublayer reads
                 // the raw residual there. `None` is the program, and the
                 // executor skips the site rather than applying identity.
@@ -303,7 +360,7 @@ impl PreparedOperands {
                     hidden,
                     store,
                 )?,
-            });
+            }));
         }
 
         let final_norm = if whole {
@@ -318,10 +375,25 @@ impl PreparedOperands {
             plan.output
                 .as_ref()
                 .map(|op| {
-                    Ok::<_, VindexError>((
+                    let can_reuse = reuse.is_some_and(|base| {
+                        !store.is_patched(&op.projection)
+                            && !store.is_overridden(&op.projection)
+                            && same_pinned_realization(
+                                &realizations,
+                                &base.realizations,
+                                &op.projection,
+                                Operation::OutputHead,
+                            )
+                    });
+                    if let Some(existing) =
+                        reuse.filter(|_| can_reuse).and_then(|b| b.output.as_ref())
+                    {
+                        return Ok::<_, VindexError>(std::sync::Arc::clone(existing));
+                    }
+                    Ok::<_, VindexError>(std::sync::Arc::new((
                         op.clone(),
                         load_weight(store, &op.projection, head_format(&op.projection)?)?,
-                    ))
+                    )))
                 })
                 .transpose()?
         } else {
@@ -371,4 +443,107 @@ impl PreparedOperands {
         prepared.place(backend);
         Ok(prepared)
     }
+}
+
+fn same_pinned_realization(
+    current: &[super::super::realization::RealizationRecord],
+    base: &[super::super::realization::RealizationRecord],
+    op: &OperandRef,
+    operation: Operation,
+) -> bool {
+    let find = |records: &[super::super::realization::RealizationRecord]| {
+        records
+            .iter()
+            .find(|r| {
+                r.planned.operand.object == op.object
+                    && r.planned.operand.tensor == op.tensor
+                    && r.planned.operation == operation
+            })
+            .map(|r| r.selection.realization)
+    };
+    matches!((find(current), find(base)), (Some(a), Some(b)) if a == b)
+}
+
+fn op_untouched(op: &OperandRef, store: OperandSource<'_>) -> bool {
+    !store.is_patched(op) && !store.is_overridden(op)
+}
+
+fn layer_reusable(
+    layer: &super::super::super::LayerPlan,
+    index: usize,
+    current: &[super::super::realization::RealizationRecord],
+    base: &[super::super::realization::RealizationRecord],
+    store: OperandSource<'_>,
+) -> bool {
+    // Check every planned matrix operand in this layer: untouched AND same pinned realization.
+    for r in current.iter().filter(|r| r.planned.layer == Some(index)) {
+        if !op_untouched(&r.planned.operand, store) {
+            return false;
+        }
+        if !same_pinned_realization(current, base, &r.planned.operand, r.planned.operation) {
+            return false;
+        }
+    }
+    // Check non-matrix glue operands on this layer (norms, layer_scale, conv1d kernels, biases).
+    for norm in [
+        &layer.pre_attention_norm,
+        &layer.post_attention_norm,
+        &layer.pre_ffn_norm,
+        &layer.post_ffn_norm,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !op_untouched(&norm.weight, store) {
+            return false;
+        }
+    }
+    if let Some(scale) = &layer.layer_scale {
+        if !op_untouched(scale, store) {
+            return false;
+        }
+    }
+    match &layer.attention {
+        LayerAttention::Softmax(attn) => {
+            if let Some(qk) = &attn.qk_norm {
+                if !op_untouched(&qk.q, store) || !op_untouched(&qk.k, store) {
+                    return false;
+                }
+            }
+            for bias in [&attn.q_bias, &attn.k_bias, &attn.v_bias, &attn.o_bias]
+                .into_iter()
+                .flatten()
+            {
+                if !op_untouched(bias, store) {
+                    return false;
+                }
+            }
+            if let Some(sinks) = &attn.sinks {
+                if !op_untouched(&sinks.logits, store) {
+                    return false;
+                }
+            }
+        }
+        LayerAttention::ShortConv(conv) => {
+            if !op_untouched(&conv.conv_weight, store) {
+                return false;
+            }
+            for bias in [&conv.in_proj_bias, &conv.conv_bias, &conv.out_proj_bias]
+                .into_iter()
+                .flatten()
+            {
+                if !op_untouched(bias, store) {
+                    return false;
+                }
+            }
+        }
+        // Other mixer families (Mamba2, Kda, GatedDelta, Mla, ConvQkv): keep conservative and
+        // reload if the source carries any overlay.
+        _ => {
+            if store.stamp().is_overlaid() {
+                return false;
+            }
+        }
+    }
+    true
 }

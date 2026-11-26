@@ -28,7 +28,7 @@ impl PreparedOperands {
                 weights.extend(ffn.weight_slices());
             }
         }
-        if let Some((_, projection)) = &self.output {
+        if let Some((_, projection)) = self.output.as_deref() {
             weights.push(projection.slice());
         }
         backend.prepare(&weights);
@@ -130,7 +130,7 @@ impl PreparedOperands {
             }
         }
         let head = pinned(None, &|o| o == Operation::OutputHead);
-        let resident = observed(self.output.iter().map(|(_, w)| w).collect());
+        let resident = observed(self.output.as_deref().into_iter().map(|(_, w)| w).collect());
         if head != resident {
             return Err(mismatch("output head".to_string(), head, resident));
         }
@@ -177,7 +177,7 @@ impl PreparedOperands {
                 }
             }
         }
-        if let Some((op, weight)) = &self.output {
+        if let Some((op, weight)) = self.output.as_deref() {
             out.push(Bound::one(&op.projection, weight).observed(Operation::OutputHead, None)?);
         }
         Ok(out)
@@ -409,7 +409,7 @@ impl PreparedOperands {
         if let Some(head) = &self.hyper_connection_head {
             census.glue.widened_f32 += head.glue_bytes();
         }
-        if let Some((_, projection)) = &self.output {
+        if let Some((_, projection)) = self.output.as_deref() {
             census.head.add(projection);
         }
         census
@@ -472,7 +472,7 @@ impl PreparedOperands {
                 ffn.loaded_matrices().iter().for_each(|w| add(w));
             }
         }
-        if let Some((_, projection)) = &self.output {
+        if let Some((_, projection)) = self.output.as_deref() {
             add(projection);
         }
     }
@@ -512,7 +512,7 @@ impl PreparedOperands {
                 ffn.loaded_matrices().iter().for_each(|w| add(w));
             }
         }
-        if let Some((_, projection)) = &self.output {
+        if let Some((_, projection)) = self.output.as_deref() {
             add(projection);
         }
         census

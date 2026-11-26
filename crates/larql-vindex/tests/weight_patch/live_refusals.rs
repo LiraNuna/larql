@@ -106,6 +106,35 @@ fn auto_source_holds_patched_matrices_at_exact_bf16_without_requantising_them() 
             .any(|name| name == TENSOR),
         "patched tensor must not appear in runtime_quantised_tensors"
     );
+
+    // Incremental `load_reusing` over a base image must only reload the patched layer,
+    // leaving every untouched layer and endpoint shared via Arc without extra store loads.
+    let base_ops =
+        PreparedOperands::load(&bound.plan, &bound.store, &backend, ExecutionSlice::Full)
+            .expect("base preparation succeeds");
+    let loads_after_base = bound.store.load_count();
+    let fresh_overrides = overlay
+        .live_weight_overrides()
+        .unwrap()
+        .expect("fresh overrides");
+    let reused_source = OperandSource::overlaid(&bound.store, &fresh_overrides);
+    let reused_ops = PreparedOperands::load_reusing(
+        &bound.plan,
+        reused_source,
+        &backend,
+        ExecutionSlice::Full,
+        &base_ops,
+    )
+    .expect("incremental reuse preparation succeeds");
+    fresh_overrides
+        .ensure_patched_read()
+        .expect("patched tensor was read through operand seam on incremental load");
+    let incremental_loads = bound.store.load_count() - loads_after_base;
+    assert!(
+        incremental_loads < loads_after_base,
+        "incremental load_reusing must load far fewer operands than full base load ({incremental_loads} vs {loads_after_base})"
+    );
+    assert_eq!(reused_ops.realizations().len(), ops.realizations().len());
 }
 
 #[test]
