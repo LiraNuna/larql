@@ -2,10 +2,10 @@
 //!
 //! A replacement reaches execution only where the loader reads the operand through the operand seam
 //! ([`OperandSource`](crate::format::vindex3::opplan::exec::operands::OperandSource)). This is an allow-list of
-//! the planned operations whose loaders have been read and do: the embedding table, a softmax layer's
-//! projections, a dense FFN's projections and the output head. Everything else is refused by name. The matches
-//! are exhaustive on purpose: an operation or a layer kind added to the plan does not compile here until someone
-//! has decided which side of the list it is on.
+//! the planned operations whose loaders have been read and do: the embedding table, a softmax or ShortConv
+//! layer's projections, a dense FFN's projections and the output head. Everything else is refused by name. The
+//! matches are exhaustive on purpose: an operation or a layer kind added to the plan does not compile here until
+//! someone has decided which side of the list it is on.
 
 use super::LiveWeightRefusal;
 use crate::format::vindex3::opplan::exec::backend::MatrixClass;
@@ -21,9 +21,9 @@ pub const WHY_SHARED_EXPERT: &str =
 /// A dense half or a projection of a routed or hybrid FFN layer.
 pub const WHY_ROUTED_FFN: &str =
     "its layer's FFN is routed, and a routed block's loaders are not qualified for live weight ops";
-/// Any mixer but softmax attention.
+/// Any mixer other than softmax attention or ShortConv.
 pub const WHY_OTHER_MIXER: &str =
-    "its layer's mixer is not softmax attention, the only mixer qualified for live weight ops";
+    "its layer's mixer is not softmax attention or ShortConv, the only mixers qualified for live weight ops";
 /// A matrix class no planned operand of a projection carries today.
 pub const WHY_UNPLANNED_CLASS: &str =
     "the plan projects no operand under this class, so no loader is qualified for it";

@@ -15,7 +15,7 @@ use larql_vindex::format::vindex3::opplan::exec::{
 };
 use larql_vindex::VindexError;
 
-use super::super::V3Runtime;
+use super::super::{confirm_patched_weights_ran, V3Runtime};
 use super::Rows;
 use crate::ast::CaptureSite;
 use crate::error::LqlError;
@@ -110,6 +110,7 @@ pub(super) fn capture(
         &mut sink,
     )
     .map_err(|e| LqlError::exec("capture pass failed", e))?;
+    confirm_patched_weights_ran(overrides)?;
     if observed.output.logits.is_none() {
         return Err(LqlError::Execution(NO_HEAD.into()));
     }

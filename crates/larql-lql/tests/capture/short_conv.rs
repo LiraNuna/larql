@@ -326,3 +326,192 @@ fn short_conv_internal_sites_capture_exact_signals_and_refuse_softmax_layers() {
     assert!(err.contains("needs a ShortConv layer"), "{err}");
     assert!(!bad.exists(), "a refused capture writes nothing");
 }
+
+fn hex_f64(values: &[f64]) -> Vec<String> {
+    values
+        .iter()
+        .map(|v| format!("{:016x}", v.to_bits()))
+        .collect()
+}
+
+#[test]
+fn staged_remove_direction_and_add_low_rank_execute_live_for_infer_and_capture_on_hybrid_short_conv(
+) {
+    let fx = HybridShortConvFixture::new();
+    let mut s = fx.session();
+
+    // Baseline captures: batch (`logits`, `post_attention`) and decode (`ffn.down_output`, `short_conv.gated_y`).
+    let base_logits = fx.path("base_logits.npy");
+    let base_post_attn = fx.path("base_post_attn.npy");
+    let base_down_out = fx.path("base_down_out.npy");
+    let base_gated_y = fx.path("base_gated_y.npy");
+    capture(&mut s, &format!("logits FOR \"{PROMPT}\""), &base_logits);
+    capture(
+        &mut s,
+        &format!("post_attention AT LAYER 0 FOR \"{PROMPT}\""),
+        &base_post_attn,
+    );
+    capture(
+        &mut s,
+        &format!("ffn.down_output AT LAYER 0 FOR \"{PROMPT}\""),
+        &base_down_out,
+    );
+    capture(
+        &mut s,
+        &format!("short_conv.gated_y AT LAYER 0 FOR \"{PROMPT}\""),
+        &base_gated_y,
+    );
+    let base_logits_bits = bits(&read_npy(&base_logits).values);
+    let base_post_attn_bits = bits(&read_npy(&base_post_attn).values);
+    let base_down_out_bits = bits(&read_npy(&base_down_out).values);
+    let base_gated_y_bits = bits(&read_npy(&base_gated_y).values);
+
+    // 1. Write operand files for REMOVE DIRECTION on dense FFN `feed_forward.w2.weight`
+    //    (both on ShortConv layer 0 and softmax layer 1) and ADD LOW RANK on ShortConv
+    //    `0.conv.in_proj.weight` + `2.conv.out_proj.weight`.
+    let u_path = fx.path("u.json");
+    let mut u = vec![0.0f64; SC_HIDDEN];
+    u[0] = 1.0;
+    std::fs::write(
+        &u_path,
+        serde_json::json!({ "bits": hex_f64(&u), "origin": "test-unit-0" }).to_string(),
+    )
+    .unwrap();
+
+    // `0.conv.in_proj.weight` has shape `[3 * SC_HIDDEN, SC_HIDDEN]`, rank 1 on columns (0, 1).
+    let ab_in_path = fx.path("ab_in.json");
+    let a_in = vec![0.5f64; 3 * SC_HIDDEN];
+    let b_in = vec![1.0f64, -1.0f64];
+    std::fs::write(
+        &ab_in_path,
+        serde_json::json!({
+            "rank": 1,
+            "a": hex_f64(&a_in),
+            "b": hex_f64(&b_in),
+            "origin": "test-sc-in"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // `2.conv.out_proj.weight` has shape `[SC_HIDDEN, SC_HIDDEN]`, rank 1 on columns (0, 1).
+    let ab_out_path = fx.path("ab_out.json");
+    let a_out = vec![0.5f64; SC_HIDDEN];
+    let b_out = vec![1.0f64, 0.5f64];
+    std::fs::write(
+        &ab_out_path,
+        serde_json::json!({
+            "rank": 1,
+            "a": hex_f64(&a_out),
+            "b": hex_f64(&b_out),
+            "origin": "test-sc-out"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Stage all four ops in one session.
+    run(
+        &mut s,
+        &format!(
+            "REMOVE DIRECTION \"{}\" FROM \"0.feed_forward.w2.weight\" COLUMNS (0, 1, 2, 3) \
+             SCALE 1.0 NUMERICS \"f64-seq-rne1/v1\";",
+            q(&u_path)
+        ),
+    );
+    run(
+        &mut s,
+        &format!(
+            "REMOVE DIRECTION \"{}\" FROM \"1.feed_forward.w2.weight\" COLUMNS (0, 1, 2, 3) \
+             SCALE 1.0 NUMERICS \"f64-seq-rne1/v1\";",
+            q(&u_path)
+        ),
+    );
+    run(
+        &mut s,
+        &format!(
+            "ADD LOW RANK \"{}\" TO \"0.conv.in_proj.weight\" COLUMNS (0, 1) \
+             NUMERICS \"f64-seq-rne1/v1\";",
+            q(&ab_in_path)
+        ),
+    );
+    run(
+        &mut s,
+        &format!(
+            "ADD LOW RANK \"{}\" TO \"2.conv.out_proj.weight\" COLUMNS (0, 1) \
+             NUMERICS \"f64-seq-rne1/v1\";",
+            q(&ab_out_path)
+        ),
+    );
+
+    // 2. Live INFER must execute cleanly on patched weights (no hybrid/non-softmax refusal).
+    let infer_out = run(&mut s, &format!("INFER \"{PROMPT}\" TOP 3;"));
+    assert!(
+        infer_out.iter().any(|l| l.contains("Predictions")),
+        "expected patched INFER predictions: {infer_out:?}"
+    );
+
+    // 3. Live CAPTURE across batch and decode sites must execute with `"executes": "patched"`
+    //    and measurably alter every affected site.
+    let pat_logits = fx.path("pat_logits.npy");
+    let pat_post_attn = fx.path("pat_post_attn.npy");
+    let pat_down_out = fx.path("pat_down_out.npy");
+    let pat_gated_y = fx.path("pat_gated_y.npy");
+    capture(&mut s, &format!("logits FOR \"{PROMPT}\""), &pat_logits);
+    capture(
+        &mut s,
+        &format!("post_attention AT LAYER 0 FOR \"{PROMPT}\""),
+        &pat_post_attn,
+    );
+    capture(
+        &mut s,
+        &format!("ffn.down_output AT LAYER 0 FOR \"{PROMPT}\""),
+        &pat_down_out,
+    );
+    capture(
+        &mut s,
+        &format!("short_conv.gated_y AT LAYER 0 FOR \"{PROMPT}\""),
+        &pat_gated_y,
+    );
+
+    let pat_logits_bits = bits(&read_npy(&pat_logits).values);
+    let pat_post_attn_bits = bits(&read_npy(&pat_post_attn).values);
+    let pat_down_out_bits = bits(&read_npy(&pat_down_out).values);
+    let pat_gated_y_bits = bits(&read_npy(&pat_gated_y).values);
+
+    assert_ne!(pat_logits_bits, base_logits_bits);
+    assert_ne!(pat_post_attn_bits, base_post_attn_bits);
+    assert_ne!(pat_down_out_bits, base_down_out_bits);
+    assert_ne!(pat_gated_y_bits, base_gated_y_bits);
+    for p in [&pat_logits, &pat_post_attn, &pat_down_out, &pat_gated_y] {
+        assert_eq!(sidecar(p)["executes"], "patched", "{}", p.display());
+    }
+    assert_eq!(
+        sidecar(&pat_gated_y)["execution"]["cross_check"]["bit_identical"],
+        true
+    );
+
+    // 4. Compiled container matches live patched CAPTURE bit for bit.
+    let compiled = fx.path("compiled_hybrid.vindex3");
+    run(
+        &mut s,
+        &format!("COMPILE CURRENT INTO VINDEX \"{}\";", q(&compiled)),
+    );
+    let mut fresh = session_on(&compiled);
+    let cmp_logits = fx.path("cmp_logits.npy");
+    let cmp_gated_y = fx.path("cmp_gated_y.npy");
+    capture(&mut fresh, &format!("logits FOR \"{PROMPT}\""), &cmp_logits);
+    capture(
+        &mut fresh,
+        &format!("short_conv.gated_y AT LAYER 0 FOR \"{PROMPT}\""),
+        &cmp_gated_y,
+    );
+    assert_eq!(bits(&read_npy(&cmp_logits).values), pat_logits_bits);
+    assert_eq!(bits(&read_npy(&cmp_gated_y).values), pat_gated_y_bits);
+
+    // 5. DISCARD WEIGHT EDITS restores base output bit for bit.
+    run(&mut s, "DISCARD WEIGHT EDITS;");
+    let after_logits = fx.path("after_logits.npy");
+    capture(&mut s, &format!("logits FOR \"{PROMPT}\""), &after_logits);
+    assert_eq!(bits(&read_npy(&after_logits).values), base_logits_bits);
+}
