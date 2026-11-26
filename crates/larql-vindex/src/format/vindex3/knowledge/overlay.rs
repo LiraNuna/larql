@@ -218,25 +218,28 @@ impl KnowledgeOverlay {
     /// else the weakest-`c_score` unclaimed slot. A pinned-`None` meta
     /// (tombstone) leaves the slot free.
     pub fn find_free_feature(&self, view: &KnowledgeView, layer: usize) -> Option<usize> {
-        let n = view.num_features(layer);
-        if n == 0 {
+        // Use the layer's batched, OnceCell-cached metadata slice instead of
+        // calling `feature_meta(layer, i)` in two loops (which would run
+        // 2 * num_features uncached `[vocab, hidden] · [hidden]` matvecs).
+        let metas = view.feature_metas(layer)?;
+        if metas.is_empty() {
             return None;
         }
         let taken_by_overlay = |i: usize| -> bool {
             self.overrides_gate.contains_key(&(layer, i))
                 || matches!(self.overrides_meta.get(&(layer, i)), Some(Some(_)))
         };
-        for i in 0..n {
-            if view.feature_meta(layer, i).is_none() && !taken_by_overlay(i) {
+        for (i, meta) in metas.iter().enumerate() {
+            if meta.is_none() && !taken_by_overlay(i) {
                 return Some(i);
             }
         }
         let mut weakest: Option<(usize, f32)> = None;
-        for i in 0..n {
+        for (i, meta) in metas.iter().enumerate() {
             if taken_by_overlay(i) {
                 continue;
             }
-            let Some(meta) = view.feature_meta(layer, i) else {
+            let Some(meta) = meta.as_ref() else {
                 continue;
             };
             if weakest.is_none_or(|(_, score)| meta.c_score < score) {
