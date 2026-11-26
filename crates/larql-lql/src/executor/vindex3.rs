@@ -22,6 +22,7 @@ use crate::executor::{Backend, Session};
 mod capture;
 mod dla;
 mod dla_math;
+mod export_safetensors;
 mod export_weight;
 mod generate;
 mod live;

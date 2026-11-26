@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -43,6 +44,15 @@ const SAFETENSORS_DTYPES: &[&str] = &[
     "I64", "U64", "F64",
 ];
 
+/// In-memory canonical tensor byte overrides keyed by `(object_id, segment_tensor)` mapping
+/// to `(raw_bytes, expected_sha256)`. Used by live LQL sessions to export staged/applied weight
+/// edits directly to Hugging Face safetensors without an intermediate `COMPILE` step.
+pub type LiveTensorOverrides = BTreeMap<(String, String), (Arc<[u8]>, String)>;
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// Options controlling a safetensors export.
 #[derive(Debug, Clone)]
 pub struct SafetensorsExportOptions<'a> {
@@ -51,6 +61,9 @@ pub struct SafetensorsExportOptions<'a> {
     pub source_checkpoint: Option<&'a Path>,
     /// Maximum payload bytes per `.safetensors` shard before sharding.
     pub max_shard_bytes: u64,
+    /// Optional in-memory patched canonical tensor overrides (superseding stored segment bytes
+    /// for those tensors while verifying every written tensor by read-back SHA-256).
+    pub live_overrides: Option<&'a LiveTensorOverrides>,
 }
 
 impl Default for SafetensorsExportOptions<'_> {
@@ -58,6 +71,7 @@ impl Default for SafetensorsExportOptions<'_> {
         Self {
             source_checkpoint: None,
             max_shard_bytes: DEFAULT_MAX_SHARD_BYTES,
+            live_overrides: None,
         }
     }
 }
@@ -93,6 +107,8 @@ pub struct SafetensorsExportReport {
     pub source_index_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight_patches_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub live_overridden_tensors: usize,
     pub total_tensors: usize,
     pub total_bytes: u64,
     pub shards: Vec<ExportedShard>,
@@ -282,6 +298,30 @@ pub fn export_safetensors(
         }
     }
 
+    // Validate every live override names a planned canonical tensor with matching byte length.
+    let live_overridden_tensors = if let Some(overrides) = options.live_overrides {
+        let planned_lens: BTreeMap<(&str, &str), u64> = planned
+            .iter()
+            .map(|t| ((t.object_id.as_str(), t.segment_tensor.as_str()), t.len))
+            .collect();
+        for ((obj, tensor), (bytes, _sha)) in overrides {
+            let Some(&expected_len) = planned_lens.get(&(obj.as_str(), tensor.as_str())) else {
+                return Err(VindexError::Parse(format!(
+                    "live override `{obj}/{tensor}` does not match any canonical tensor in the container"
+                )));
+            };
+            if bytes.len() as u64 != expected_len {
+                return Err(VindexError::Parse(format!(
+                    "live override `{obj}/{tensor}` has {} bytes, expected {expected_len}",
+                    bytes.len()
+                )));
+            }
+        }
+        overrides.len()
+    } else {
+        0
+    };
+
     // Deterministic order by HF tensor name.
     planned.sort_by(|a, b| a.hf_name.cmp(&b.hf_name));
 
@@ -313,12 +353,18 @@ pub fn export_safetensors(
             group,
             &index.model,
             &source_index_sha256,
+            options.live_overrides,
         )?;
         for rec in &tensor_records {
-            // Cross-check against weight_patches.json ledger result_tensor_sha256 if recorded.
-            if let Some(expected_hash) =
-                ledger_tensor_hashes.get(&(rec.object.clone(), rec.segment_tensor.clone()))
-            {
+            let key = (rec.object.clone(), rec.segment_tensor.clone());
+            if let Some((_, expected_hash)) = options.live_overrides.and_then(|ov| ov.get(&key)) {
+                if &rec.sha256 != expected_hash {
+                    return Err(VindexError::Parse(format!(
+                        "exported live-patched tensor `{}` ({}/{}) SHA-256 {} disagrees with live view {}",
+                        rec.name, rec.object, rec.segment_tensor, rec.sha256, expected_hash
+                    )));
+                }
+            } else if let Some(expected_hash) = ledger_tensor_hashes.get(&key) {
                 if &rec.sha256 != expected_hash {
                     return Err(VindexError::Parse(format!(
                         "exported tensor `{}` ({}/{}) SHA-256 {} disagrees with weight-patch ledger {}",
@@ -389,6 +435,7 @@ pub fn export_safetensors(
         model: index.model,
         source_index_sha256,
         weight_patches_sha256,
+        live_overridden_tensors,
         total_tensors: exported_tensors.len(),
         total_bytes,
         shards: exported_shards,
@@ -414,6 +461,7 @@ fn write_and_verify_shard(
     tensors: &[&PlannedExportTensor],
     model_name: &str,
     source_index_sha256: &str,
+    live_overrides: Option<&LiveTensorOverrides>,
 ) -> Result<(ExportedShard, Vec<ExportedTensorRecord>), VindexError> {
     let mut header_map = serde_json::Map::new();
     header_map.insert(
@@ -462,6 +510,14 @@ fn write_and_verify_shard(
     let mut open_segments: BTreeMap<&Path, File> = BTreeMap::new();
 
     for t in tensors {
+        if let Some((bytes, _expected_sha)) =
+            live_overrides.and_then(|ov| ov.get(&(t.object_id.clone(), t.segment_tensor.clone())))
+        {
+            writer.write_all(bytes)?;
+            file_hasher.update(bytes);
+            source_hashes.push(hex_digest(bytes));
+            continue;
+        }
         let seg_file = match open_segments.get_mut(t.segment_path.as_path()) {
             Some(f) => f,
             None => {

@@ -124,6 +124,7 @@ fn public_explorer_check(stmt: &Statement) -> Result<(), LqlError> {
         | Diff { .. }
         | Use { .. }
         | ExportWeight { .. }
+        | ExportSafetensors { .. }
         | Capture { .. }
         | CaptureMulti { .. }
         | VerifyRepresentation { .. }

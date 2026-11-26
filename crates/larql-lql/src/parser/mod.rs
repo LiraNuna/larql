@@ -93,7 +93,7 @@ impl Parser {
             Token::Ident(ref s) if s.eq_ignore_ascii_case("DISCARD") => {
                 self.parse_discard_weight_edits()
             }
-            Token::Ident(ref s) if s.eq_ignore_ascii_case("EXPORT") => self.parse_export_weight(),
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("EXPORT") => self.parse_export(),
             Token::Ident(ref s) if s.eq_ignore_ascii_case("CAPTURE") => self.parse_capture(),
             Token::Ident(ref s) if s.eq_ignore_ascii_case("DLA") => self.parse_dla(),
             Token::Ident(ref s) if s.eq_ignore_ascii_case("HELP") => self.parse_help(),

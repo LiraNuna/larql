@@ -53,6 +53,7 @@ topic_enum! {
         ShowRepresentations,
         ShowTensors,
         ExportWeight,
+        ExportSafetensors,
         ShowProvenance,
         ShowAuthority,
         ShowLayers,

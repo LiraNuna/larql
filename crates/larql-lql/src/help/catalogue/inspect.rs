@@ -139,6 +139,44 @@ pub(super) static EXPORT_WEIGHT: StatementHelp = StatementHelp {
     related: &["SHOW TENSORS", "SHOW REPRESENTATIONS", "COMPILE", "BATCH"],
 };
 
+pub(super) static EXPORT_SAFETENSORS: StatementHelp = StatementHelp {
+    name: "EXPORT SAFETENSORS",
+    aliases: &["EXPORT HF", "SAFETENSORS"],
+    group: HelpGroup::Inspect,
+    syntax: &["EXPORT SAFETENSORS [TO] \"<output_dir>\" [FROM [BASE] \"<hf_checkpoint_dir>\"];"],
+    does: &[
+        "Exports the bound canonical VINDEX3 container — including any live staged or applied",
+        "stored-weight edits in the session — directly to a Hugging Face safetensors directory",
+        "(model.safetensors or sharded files + export_manifest.json), with independent read-back",
+        "SHA-256 verification of every exported tensor.",
+        "When FROM BASE \"<hf_checkpoint_dir>\" is given, config.json and any missing tokenizer or",
+        "generation capability files are copied into the output directory so it loads directly in",
+        "PyTorch, Transformers, lm_eval, or vLLM with bit-for-bit parity against LARQL.",
+    ],
+    examples: &[
+        "EXPORT SAFETENSORS \"out_hf\";",
+        "EXPORT SAFETENSORS \"out_hf\" FROM BASE \"base_hf\";",
+        "EXPORT SAFETENSORS TO \"out_hf\" FROM \"base_hf\";",
+    ],
+    needs: &[Need::Vindex3],
+    effect: &[
+        "Writes <output_dir> with .safetensors file(s) and export_manifest.json; changes nothing",
+        "in the session or the bound container.",
+        "Pending stored-weight edits (UPDATE WEIGHTS, REMOVE DIRECTION, REMOVE INPUT DIRECTION,",
+        "ADD LOW RANK, or applied .vlp weight patches) are materialised directly into the exported",
+        "safetensors without needing an intermediate COMPILE CURRENT INTO VINDEX.",
+    ],
+    operands: &[],
+    refusals: &[
+        "The session is bound to something other than a canonical VINDEX3 container.",
+        "The output directory already exists: nothing is overwritten.",
+        "FROM BASE names a directory without config.json.",
+        "Knowledge edits (INSERT / UPDATE / DELETE) are pending in the session.",
+        "After a failed statement in a batch (HELP BATCH;).",
+    ],
+    related: &["EXPORT WEIGHT", "COMPILE", "REMOVE DIRECTION", "BATCH"],
+};
+
 pub(super) static SHOW_PROVENANCE: StatementHelp = StatementHelp {
     name: "SHOW PROVENANCE",
     aliases: &[],

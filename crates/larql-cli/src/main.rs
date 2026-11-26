@@ -192,6 +192,10 @@ enum Commands {
     /// Convert between model formats (GGUF ↔ vindex, safetensors → vindex).
     Convert(convert_cmd::ConvertArgs),
 
+    #[command(next_help_heading = "Build", name = "export-hf")]
+    /// Export a canonical VINDEX3 container directly to Hugging Face safetensors.
+    ExportHf(export_hf_cmd::ExportHfArgs),
+
     #[command(next_help_heading = "Build")]
     /// HuggingFace Hub: upload a vindex.
     Hf(hf_cmd::HfArgs),
@@ -468,6 +472,7 @@ fn real_main() -> i32 {
         Commands::Build(args) => build_cmd::run(args),
         Commands::Compile(args) => compile_cmd::run(args),
         Commands::Convert(args) => convert_cmd::run(args),
+        Commands::ExportHf(args) => export_hf_cmd::run(args),
         Commands::Hf(args) => hf_cmd::run(args),
         Commands::Verify(args) => verify_cmd::run(args),
         Commands::Diag(args) => diag_cmd::run(args),

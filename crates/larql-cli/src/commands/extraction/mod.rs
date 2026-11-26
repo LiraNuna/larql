@@ -15,6 +15,7 @@ pub mod compile_cmd;
 pub mod convert_cmd;
 #[cfg(feature = "research")]
 pub mod embedding_jump_cmd;
+pub mod export_hf_cmd;
 pub mod extract_index_cmd;
 #[cfg(feature = "research")]
 pub mod ffn_bottleneck_cmd;

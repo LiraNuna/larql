@@ -451,6 +451,10 @@ impl Session {
             } => {
                 self.exec_export_weight(tensor, rows.as_deref(), columns.as_deref(), output, *bits)
             }
+            Statement::ExportSafetensors {
+                output,
+                base_checkpoint,
+            } => self.exec_export_safetensors(output, base_checkpoint.as_deref()),
             Statement::Capture {
                 site,
                 layers,

@@ -49,6 +49,7 @@ pub(crate) const HELP_GROUPS: &[HelpGroup] = &[
             "build",
             "compile",
             "convert",
+            "export-hf",
             "hf",
             "verify",
         ],

@@ -273,6 +273,7 @@ fn patched_vindex3_exports_to_safetensors_and_round_trips_bit_identically() {
         &SafetensorsExportOptions {
             source_checkpoint: Some(&ckpt),
             max_shard_bytes: 4096,
+            ..Default::default()
         },
     )
     .unwrap();

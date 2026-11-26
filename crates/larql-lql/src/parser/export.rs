@@ -1,7 +1,8 @@
-//! `EXPORT WEIGHT "<tensor>" [ROWS (<i>, …)] [COLUMNS (<j>, …)] TO "<file>.npy" [AS BITS]`.
+//! `EXPORT WEIGHT "<tensor>" [ROWS (<i>, …)] [COLUMNS (<j>, …)] TO "<file>.npy" [AS BITS]`
+//! and `EXPORT SAFETENSORS [TO] "<output_dir>" [FROM [BASE] "<hf_checkpoint_dir>"]`.
 //!
-//! `EXPORT`, `WEIGHT`, `ROWS`, `COLUMNS`, `AS` and `BITS` are read as words in this position, not reserved, so no
-//! existing identifier changes meaning.
+//! `EXPORT`, `WEIGHT`, `SAFETENSORS`, `BASE`, `ROWS`, `COLUMNS`, `AS` and `BITS` are read as
+//! words in this position, not reserved, so no existing identifier changes meaning.
 
 use super::{ParseError, Parser};
 use crate::ast::Statement;
@@ -13,9 +14,20 @@ fn is_word(token: &Token, word: &str) -> bool {
 }
 
 impl Parser {
-    pub(crate) fn parse_export_weight(&mut self) -> Result<Statement, ParseError> {
+    pub(crate) fn parse_export(&mut self) -> Result<Statement, ParseError> {
         self.expect_ident_eq("EXPORT")?;
-        self.expect_words_after("EXPORT", &["WEIGHT"])?;
+        if is_word(&self.peek(), "WEIGHT") {
+            self.advance();
+            self.parse_export_weight_body()
+        } else if self.check_keyword(Keyword::Safetensors) || is_word(&self.peek(), "SAFETENSORS") {
+            self.advance();
+            self.parse_export_safetensors_body()
+        } else {
+            Err(self.expected_after("EXPORT"))
+        }
+    }
+
+    fn parse_export_weight_body(&mut self) -> Result<Statement, ParseError> {
         let tensor = self.expect_string()?;
         let rows = if is_word(&self.peek(), "ROWS") {
             self.advance();
@@ -52,6 +64,27 @@ impl Parser {
             columns,
             output,
             bits,
+        })
+    }
+
+    fn parse_export_safetensors_body(&mut self) -> Result<Statement, ParseError> {
+        if self.check_keyword(Keyword::To) {
+            self.advance();
+        }
+        let output = self.expect_string()?;
+        let base_checkpoint = if self.check_keyword(Keyword::From) {
+            self.advance();
+            if is_word(&self.peek(), "BASE") {
+                self.advance();
+            }
+            Some(self.expect_string()?)
+        } else {
+            None
+        };
+        self.eat_semicolon();
+        Ok(Statement::ExportSafetensors {
+            output,
+            base_checkpoint,
         })
     }
 }

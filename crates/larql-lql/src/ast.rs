@@ -222,6 +222,14 @@ pub enum Statement {
         output: String,
         bits: bool,
     },
+    /// `EXPORT SAFETENSORS [TO] "<output_dir>" [FROM [BASE] "<hf_checkpoint_dir>"]` (VINDEX3):
+    /// export the bound canonical VINDEX3 container — including any live staged or applied
+    /// stored-weight edits — directly into a Hugging Face safetensors directory with independent
+    /// read-back SHA-256 verification.
+    ExportSafetensors {
+        output: String,
+        base_checkpoint: Option<String>,
+    },
     /// `CAPTURE <site> [AT LAYER <n> | AT LAYERS (<n>, …)] FOR "<prompt>" [CONTINUE "<text>" | CONTINUE
     /// TOKENS (<id>, …) | GENERATE <n>] [POSITIONS …] TO "<file>.npy"` (VINDEX3): run the session's program
     /// over the prompt (and continuation), as `INFER` runs it, and write the values it computed at one site to a
@@ -398,6 +406,7 @@ impl Statement {
             Statement::ShowRepresentations { .. } => "SHOW REPRESENTATIONS",
             Statement::ShowTensors { .. } => "SHOW TENSORS",
             Statement::ExportWeight { .. } => "EXPORT WEIGHT",
+            Statement::ExportSafetensors { .. } => "EXPORT SAFETENSORS",
             Statement::Capture { .. } | Statement::CaptureMulti { .. } => "CAPTURE",
             Statement::ShowProvenance { .. } => "SHOW PROVENANCE",
             Statement::ShowAuthority => "SHOW AUTHORITY",

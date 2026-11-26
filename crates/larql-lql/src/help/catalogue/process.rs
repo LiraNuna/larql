@@ -84,7 +84,7 @@ pub(super) static BATCH: ConceptHelp = ConceptHelp {
         "  Once any statement has failed (a parse error, a refusal, an execution error), every later",
         "  statement that would write an artifact is refused and counts as a failure: EXTRACT,",
         "  COMPILE, COMPACT INTO VINDEX, COMPACT MAJOR, SAVE PATCH, DIFF ... INTO PATCH, TRACE ...",
-        "  SAVE, EXPORT WEIGHT, CAPTURE, and a pipe containing one. So a COMPILE never writes a",
+        "  SAVE, EXPORT WEIGHT, EXPORT SAFETENSORS, CAPTURE, and a pipe containing one. So a COMPILE never writes a",
         "  container built from a session in which an earlier edit was refused. A violated VERIFY",
         "  contract is not a failure and does not stop later writes.",
         "",

@@ -41,6 +41,7 @@ pub(super) fn run(args: ExportArgs) -> Result<(), Box<dyn std::error::Error>> {
             let options = SafetensorsExportOptions {
                 source_checkpoint: args.source_checkpoint.as_deref(),
                 max_shard_bytes: args.max_shard_bytes,
+                live_overrides: None,
             };
             let report = export_safetensors(&args.container, &args.output, &options)?;
             println!(

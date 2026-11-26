@@ -29,6 +29,8 @@ impl Statement {
             | Statement::SavePatch
             // Writes a .npy file and its sidecar.
             | Statement::ExportWeight { .. }
+            // Writes a Hugging Face safetensors directory and manifest.
+            | Statement::ExportSafetensors { .. }
             // Writes .npy file(s) and sidecar(s).
             | Statement::Capture { .. }
             | Statement::CaptureMulti { .. } => true,

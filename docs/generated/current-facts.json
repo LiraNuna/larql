@@ -30,6 +30,7 @@
       "consequence",
       "encode",
       "exec",
+      "export",
       "inspect",
       "measure",
       "observe",

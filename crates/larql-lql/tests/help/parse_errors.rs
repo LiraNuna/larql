@@ -149,7 +149,7 @@ fn the_continuations_of_each_keyword_are_the_ones_asked_for() {
     );
     assert_eq!(grammar::continuations("SHOW").len(), 12);
     assert!(grammar::continuations("SHOW").contains(&"TENSORS"));
-    assert_eq!(grammar::continuations("EXPORT"), ["WEIGHT"]);
+    assert_eq!(grammar::continuations("EXPORT"), ["WEIGHT", "SAFETENSORS"]);
     assert!(grammar::continuations("INFER").is_empty());
 }
 
