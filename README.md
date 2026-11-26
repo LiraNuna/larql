@@ -1,5 +1,24 @@
 # LARQL
 
+> **Fork Notice (`LiraNuna/larql`):** This fork of [`chrishayuk/larql`](https://github.com/chrishayuk/larql) adds full VINDEX3 planning, encoding, execution, quantization, introspection, weight patching, and serving support for **`LiquidAI/LFM3-1.7B`** and its derivatives (including **[`LiraNuna/LFM3-1.7B`](https://huggingface.co/LiraNuna/LFM3-1.7B)**).
+>
+> **What this fork adds:**
+> - **LFM3 architecture & `ShortConv` recurrence (`Lfm3ShortConv`)** — gated causal depthwise-conv1d (`conv_L_cache`, optional `conv_bias`) with exact `[hidden, L_cache]` recurrent continuation state across batch prefill, step-by-step decode, and multi-turn server sessions.
+> - **Per-head scalar sigmoid attention output gates (`GateGranularity::PerHead`)** — `[num_attention_heads, hidden]` gate projections across reference, production, and device backends, including per-head observation and head interventions.
+> - **LFM3 norm, FFN & RoPE dialects** — `model.embedding_norm.weight` final norm, 4-norm sandwich (`use_sandwich_norm: true`) and 2-norm (`use_sandwich_norm: false`) placements, `feed_forward.{w1,w3,w2}` SwiGLU mappings, untied `lm_head` derivatives, and `HeadWidth` partial RoPE with `rope_type: "default"`.
+> - **Chat template & thinking controls** — strips Hugging Face `{% generation %}` / `{% endgeneration %}` assistant-mask tags for `minijinja`, preserves `bos_token` on multi-message renders, and supports explicit `LARQL_THINKING=0` / `false` to disable default-on reasoning.
+> - **Full LARQL capability coverage** — verified numerically against Hugging Face `float32` (`cos >= 0.9999999` across all 24 layers and on prompts exceeding `sliding_window = 256`), plus `vindex represent --encoding Q8_0`, LQL (`INFER`, `TRACE`, `CAPTURE`, `UPDATE WEIGHTS`, `.vlp` patches, `COMPILE`, `COMPACT`), `larql run`, and `larql serve` (`/v1/chat/completions`, SSE streaming, multi-turn `X-Session-Id`, `/v1/responses`).
+>
+> ```bash
+> git clone https://github.com/LiraNuna/larql && cd larql
+> cargo build --release -p larql-cli -p larql-server -p vindex-cli   # Linux/Windows: add --no-default-features
+>
+> larql vindex3 encode /path/to/LFM3-1.7B --output lfm3.vindex3
+> LARQL_THINKING=0 larql run lfm3.vindex3 "What is the capital of France? Answer in one word."
+> LARQL_THINKING=1 larql run lfm3.vindex3 "What is 17 * 23?"
+> larql serve lfm3.vindex3 --port 8080
+> ```
+
 **Run, serve, query and edit AI models — and see what they're doing inside.**
 
 LARQL is a model runtime written in Rust. Point it at a Hugging Face model and
