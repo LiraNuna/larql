@@ -33,39 +33,62 @@ fn assert_execution_refused(s: &mut Session, reason: &str) {
 
 #[test]
 fn a_session_whose_source_may_manufacture_a_representation_refuses_to_execute() {
-    for (source, name) in [
-        (RepresentationSource::Auto, "auto"),
-        (RepresentationSource::Transient, "transient"),
-    ] {
-        let fx = inferable();
-        let mut s = Session::new();
-        s.set_representation_source(source);
-        run(&mut s, &format!("USE \"{}\";", q(&fx.container)));
-        let base = infer(&mut s);
+    let fx = inferable();
+    let mut s = Session::new();
+    s.set_representation_source(RepresentationSource::Transient);
+    run(&mut s, &format!("USE \"{}\";", q(&fx.container)));
+    let base = infer(&mut s);
 
-        let staged = run(
-            &mut s,
-            &statement(&fx, Kind::UpdateWeights, COLUMNS_A, "unused.json"),
-        );
-        assert!(
-            has(&staged, "NOT executable in this session")
-                && has(&staged, &format!("representation source is `{name}`")),
-            "{staged:?}"
-        );
-        assert!(live_digests(&staged).is_empty());
-        assert_execution_refused(&mut s, "execute only under `stored`");
+    let staged = run(
+        &mut s,
+        &statement(&fx, Kind::UpdateWeights, COLUMNS_A, "unused.json"),
+    );
+    assert!(
+        has(&staged, "NOT executable in this session")
+            && has(&staged, "representation source is `transient`"),
+        "{staged:?}"
+    );
+    assert!(live_digests(&staged).is_empty());
+    assert_execution_refused(&mut s, "execute under `stored`");
 
-        // The op is still pending and still compiles: only executing it here is refused.
-        let out = fx.path("compiled.vindex3");
-        run(
-            &mut s,
-            &format!("COMPILE CURRENT INTO VINDEX \"{}\";", q(&out)),
-        );
-        let mut fresh = Session::new();
-        fresh.set_representation_source(source);
-        run(&mut fresh, &format!("USE \"{}\";", q(&out)));
-        assert_ne!(infer(&mut fresh), base);
-    }
+    // The op is still pending and still compiles: only executing it here is refused.
+    let out = fx.path("compiled.vindex3");
+    run(
+        &mut s,
+        &format!("COMPILE CURRENT INTO VINDEX \"{}\";", q(&out)),
+    );
+    let mut fresh = Session::new();
+    fresh.set_representation_source(RepresentationSource::Transient);
+    run(&mut fresh, &format!("USE \"{}\";", q(&out)));
+    assert_ne!(infer(&mut fresh), base);
+}
+
+#[test]
+fn auto_session_executes_live_weight_patches_in_hybrid_mode() {
+    let fx = inferable();
+    let mut s = Session::new();
+    s.set_representation_source(RepresentationSource::Auto);
+    run(&mut s, &format!("USE \"{}\";", q(&fx.container)));
+    let base = infer(&mut s);
+
+    let staged = run(
+        &mut s,
+        &statement(&fx, Kind::UpdateWeights, COLUMNS_A, "unused.json"),
+    );
+    assert!(
+        !has(&staged, "NOT executable") && !live_digests(&staged).is_empty(),
+        "auto source should permit hybrid live execution: {staged:?}"
+    );
+    let patched = infer(&mut s);
+    assert_ne!(patched, base, "hybrid auto INFER must reflect live patch");
+
+    // Repeat INFER and run GENERATE in the same session to exercise resident prepared-operand reuse.
+    assert_eq!(infer(&mut s), patched);
+    let generated = run(
+        &mut s,
+        &format!("INFER \"{PROMPT}\" GENERATE {NEW_TOKENS};"),
+    );
+    assert!(has(&generated, "Generated"), "{generated:?}");
 }
 
 #[test]

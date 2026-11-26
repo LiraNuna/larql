@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use larql_inference::vindex3::PlaneEvent;
 use larql_vindex::format::vindex3::opplan::exec::operands::OperandSource;
 use larql_vindex::format::vindex3::opplan::exec::{
-    execute_streaming_position_exits_with_taps, requires_continuation, BatchTapRequest,
+    execute_prepared_position_exits_with_taps, requires_continuation, BatchTapRequest,
 };
 use larql_vindex::format::vindex3::opplan::LayerFfn;
 
@@ -19,7 +19,7 @@ use super::dla_math::{
     dot_diff_f64, dot_f64, linearize_norm, load_two_rows, mixer_label, plane_rows,
     resolve_dla_layers, resolve_single_token,
 };
-use super::{confirm_patched_weights_ran, encode_raw_prompt, execution_overrides, v3_continuation};
+use super::{encode_raw_prompt, prepared_operands_for_session, v3_continuation};
 use crate::ast::CaptureLayers;
 use crate::error::LqlError;
 use crate::executor::Session;
@@ -89,7 +89,8 @@ impl Session {
         top_columns: Option<u32>,
         top_heads: Option<u32>,
     ) -> Result<DlaReport, LqlError> {
-        let (runtime, tokenizer, overlay, bos_token) = self.v3_text_program("DLA")?;
+        let (runtime, tokenizer, overlay, bos_token, prepared_cache) =
+            self.v3_text_program("DLA")?;
         let plan = runtime.plan();
         if !plan.residual_topology.is_single_stream() {
             return Err(LqlError::Execution(format!(
@@ -128,7 +129,7 @@ impl Session {
         let token_id_b = resolve_single_token(tokenizer, target_b, "VS", vocab_size)?;
 
         let start = std::time::Instant::now();
-        let overrides = execution_overrides(runtime, overlay)?;
+        let (ops, overrides) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let executes_patched = overrides.is_some();
         let source = match &overrides {
             Some(ov) => OperandSource::overlaid(runtime.store(), ov),
@@ -186,9 +187,9 @@ impl Session {
 
         let continuation = v3_continuation(runtime)?;
         let state = requires_continuation(plan).then(|| continuation.build());
-        let (observed, tap_out) = execute_streaming_position_exits_with_taps(
+        let (observed, tap_out) = execute_prepared_position_exits_with_taps(
             plan,
-            source,
+            &ops,
             &prompt_ids,
             runtime.backend(),
             state,
@@ -197,7 +198,6 @@ impl Session {
             &mut sink,
         )
         .map_err(|e| LqlError::exec("DLA forward pass failed", e))?;
-        confirm_patched_weights_ran(overrides.as_ref())?;
 
         let exit = observed
             .exits
@@ -217,16 +217,42 @@ impl Session {
             })?
         };
 
-        // Load the two vocabulary rows of lm_head (2-row range read when unpatched float).
-        let (row_a, row_b) = load_two_rows(
-            &source,
-            &output_op.projection,
-            token_id_a as usize,
-            token_id_b as usize,
-            vocab_size,
-            hidden,
-        )
-        .map_err(|e| LqlError::exec("DLA failed to read output head rows", e))?;
+        // Read the two vocabulary rows from the resident prepared output head (matching the
+        // exact Q8 or BF16 realization that computed `exit.logits`), falling back to a
+        // 2-row range read from `source` for exotic packed head representations.
+        let (row_a, row_b) = if token_id_a == token_id_b {
+            match ops
+                .select_output_head(&[token_id_a])
+                .and_then(|h| h.row_f32(0))
+            {
+                Ok(r) => (r.clone(), r),
+                Err(_) => load_two_rows(
+                    &source,
+                    &output_op.projection,
+                    token_id_a as usize,
+                    token_id_b as usize,
+                    vocab_size,
+                    hidden,
+                )
+                .map_err(|e| LqlError::exec("DLA failed to read output head rows", e))?,
+            }
+        } else {
+            match ops
+                .select_output_head(&[token_id_a, token_id_b])
+                .and_then(|h| Ok((h.row_f32(0)?, h.row_f32(1)?)))
+            {
+                Ok(pair) => pair,
+                Err(_) => load_two_rows(
+                    &source,
+                    &output_op.projection,
+                    token_id_a as usize,
+                    token_id_b as usize,
+                    vocab_size,
+                    hidden,
+                )
+                .map_err(|e| LqlError::exec("DLA failed to read output head rows", e))?,
+            }
+        };
 
         let mult = output_op.multiplier.unwrap_or(1.0) as f32;
         let u_diff: Vec<f32> = row_a
@@ -317,8 +343,9 @@ impl Session {
                     .map_err(|e| LqlError::exec("DLA failed to linearize post_ffn_norm", e))?;
             }
 
-            let w_down = source
-                .load(&ffn.down)
+            let w_down = ops
+                .dense_ffn_down_f32(plan, l)
+                .or_else(|_| source.load(&ffn.down))
                 .map_err(|e| LqlError::exec("DLA failed to load FFN down projection", e))?;
             let intermediate = ffn.intermediate_size;
             if w_down.len() != hidden * intermediate || act.len() != intermediate {
@@ -376,8 +403,9 @@ impl Session {
             })?;
             let head_out = &head_out_rows[last];
             let q_rows = attn_op.num_q_heads * attn_op.head_dim;
-            let w_o = source
-                .load(&attn_op.o)
+            let w_o = ops
+                .attention_o_proj_f32(plan, l)
+                .or_else(|_| source.load(&attn_op.o))
                 .map_err(|e| LqlError::exec("DLA failed to load attention o_proj", e))?;
             if w_o.len() != hidden * q_rows || head_out.len() != q_rows {
                 return Err(LqlError::Execution(format!(

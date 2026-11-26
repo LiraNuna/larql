@@ -108,12 +108,32 @@ pub fn execute_streaming_position_exits<'s, B: PlanBackend + ?Sized>(
 }
 
 /// [`execute_streaming_position_exits`], additionally collecting any requested
-/// batch-prefill taps (`ffn.down_input`, `ffn.down_output`, `short_conv.*`)
-/// in the exact same single traversal.
+/// batch-prefill taps (`ffn.down_input`, `ffn.down_output`, `short_conv.*`,
+/// `attn.head_out`, `attn.weights`) in the exact same single traversal.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_streaming_position_exits_with_taps<'s, B: PlanBackend + ?Sized>(
     plan: &ComponentOpPlan,
     store: impl Into<OperandSource<'s>>,
+    tokens: &[u32],
+    backend: &B,
+    state: Option<BoxedContinuation>,
+    positions: &[usize],
+    taps: &BatchTapRequest,
+    sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
+) -> Result<(ObservedPrefill, BatchTapOutput), VindexError> {
+    validate_position_exits_request(plan, tokens, backend, positions, taps)?;
+    let ops = PreparedOperands::load(plan, store, backend, ExecutionSlice::Full)?;
+    execute_prepared_position_exits_with_taps(
+        plan, &ops, tokens, backend, state, positions, taps, sink,
+    )
+}
+
+/// [`execute_streaming_position_exits_with_taps`] over operands the caller already
+/// prepared, avoiding repeated weight loads and Q8 quantisation across statements.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_prepared_position_exits_with_taps<B: PlanBackend + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
     tokens: &[u32],
     backend: &B,
     mut state: Option<BoxedContinuation>,
@@ -121,6 +141,60 @@ pub fn execute_streaming_position_exits_with_taps<'s, B: PlanBackend + ?Sized>(
     taps: &BatchTapRequest,
     sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
 ) -> Result<(ObservedPrefill, BatchTapOutput), VindexError> {
+    validate_position_exits_request(plan, tokens, backend, positions, taps)?;
+    let keep_exit_plane = !positions.is_empty();
+    // Only the newest layer's plane is kept: each boundary replaces the last.
+    let mut exit_plane: Option<Plane> = None;
+    let mut forward = |event: PlaneEvent| {
+        if keep_exit_plane {
+            if let PlaneEvent::Layer { trace, .. } = &event {
+                exit_plane = Some(trace.post_layer.clone());
+            }
+        }
+        sink(event)
+    };
+    let mut tap_output = BatchTapOutput::default();
+    let tap_arg = (!taps.is_empty()).then_some((taps, &mut tap_output));
+    let output = super::streaming::execute_prepared_streaming_with_taps(
+        plan,
+        ops,
+        tokens,
+        backend,
+        None,
+        &mut forward,
+        state.as_mut().map(|s| &mut **s as &mut dyn KvState),
+        Mutation::None,
+        tap_arg,
+    )?;
+    if !keep_exit_plane {
+        return Ok((
+            ObservedPrefill {
+                output,
+                exits: Vec::new(),
+            },
+            tap_output,
+        ));
+    }
+    let rows = exit_rows(exit_plane)?;
+    let mut exits = Vec::with_capacity(positions.len());
+    for &p in positions {
+        let (hidden, logits) = row_exit(ops, backend, &rows[p])?;
+        if p + 1 == tokens.len() {
+            same_as_exit(&logits, output.logits.as_deref())?;
+            same_hidden(&hidden, &output.exit)?;
+        }
+        exits.push(PositionExit { hidden, logits });
+    }
+    Ok((ObservedPrefill { output, exits }, tap_output))
+}
+
+fn validate_position_exits_request<B: PlanBackend + ?Sized>(
+    plan: &ComponentOpPlan,
+    tokens: &[u32],
+    backend: &B,
+    positions: &[usize],
+    taps: &BatchTapRequest,
+) -> Result<(), VindexError> {
     if let Some(bad) = positions.iter().find(|&&p| p >= tokens.len()) {
         return Err(VindexError::Parse(format!(
             "position {bad} is outside a {}-token sequence",
@@ -200,51 +274,7 @@ pub fn execute_streaming_position_exits_with_taps<'s, B: PlanBackend + ?Sized>(
             )));
         }
     }
-    let ops = PreparedOperands::load(plan, store, backend, ExecutionSlice::Full)?;
-    let keep_exit_plane = !positions.is_empty();
-    // Only the newest layer's plane is kept: each boundary replaces the last.
-    let mut exit_plane: Option<Plane> = None;
-    let mut forward = |event: PlaneEvent| {
-        if keep_exit_plane {
-            if let PlaneEvent::Layer { trace, .. } = &event {
-                exit_plane = Some(trace.post_layer.clone());
-            }
-        }
-        sink(event)
-    };
-    let mut tap_output = BatchTapOutput::default();
-    let tap_arg = (!taps.is_empty()).then_some((taps, &mut tap_output));
-    let output = super::streaming::execute_prepared_streaming_with_taps(
-        plan,
-        &ops,
-        tokens,
-        backend,
-        None,
-        &mut forward,
-        state.as_mut().map(|s| &mut **s as &mut dyn KvState),
-        Mutation::None,
-        tap_arg,
-    )?;
-    if !keep_exit_plane {
-        return Ok((
-            ObservedPrefill {
-                output,
-                exits: Vec::new(),
-            },
-            tap_output,
-        ));
-    }
-    let rows = exit_rows(exit_plane)?;
-    let mut exits = Vec::with_capacity(positions.len());
-    for &p in positions {
-        let (hidden, logits) = row_exit(&ops, backend, &rows[p])?;
-        if p + 1 == tokens.len() {
-            same_as_exit(&logits, output.logits.as_deref())?;
-            same_hidden(&hidden, &output.exit)?;
-        }
-        exits.push(PositionExit { hidden, logits });
-    }
-    Ok((ObservedPrefill { output, exits }, tap_output))
+    Ok(())
 }
 
 /// The final-normed row at the last position is the traversal's own exit state, bit for bit.

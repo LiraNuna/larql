@@ -7,7 +7,7 @@
 use larql_vindex::format::vindex3::knowledge::KnowledgeOverlay;
 use larql_vindex::tokenizers::Tokenizer;
 
-use super::super::{encode_raw_prompt, generate::greedy_generate, V3Runtime};
+use super::super::{encode_raw_prompt, generate::greedy_generate, PreparedCache, V3Runtime};
 use super::refused;
 use crate::ast::{CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite};
 use crate::error::LqlError;
@@ -35,6 +35,7 @@ impl Sequence {
 pub(super) fn build(
     runtime: &V3Runtime,
     overlay: &KnowledgeOverlay,
+    prepared_cache: &PreparedCache,
     tokenizer: &Tokenizer,
     bos: Option<u32>,
     prompt: &str,
@@ -75,8 +76,14 @@ pub(super) fn build(
             serde_json::json!({ "kind": "tokens", "token_ids": added })
         }
         Some(CaptureContinuation::Generate(n)) => {
-            let (generated, text) =
-                greedy_generate(runtime, overlay, tokenizer, &ids, *n as usize)?;
+            let (generated, text) = greedy_generate(
+                runtime,
+                overlay,
+                prepared_cache,
+                tokenizer,
+                &ids,
+                *n as usize,
+            )?;
             ids.extend_from_slice(&generated.tokens);
             serde_json::json!({
                 "kind": "generate",

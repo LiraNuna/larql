@@ -127,6 +127,67 @@ impl PreparedOperands {
         })
     }
 
+    /// The effective dense FFN down-projection matrix `[hidden, intermediate]`
+    /// as held by this prepared image (widened/dequantised from its pinned
+    /// resident representation, e.g. exact BF16 or Q8).
+    pub fn dense_ffn_down_f32(
+        &self,
+        plan: &ComponentOpPlan,
+        layer: usize,
+    ) -> Result<Vec<f32>, VindexError> {
+        let layer_plan = plan.layers.get(layer).ok_or_else(|| {
+            VindexError::Parse(format!("layer {layer} is outside the component plan"))
+        })?;
+        let LayerFfn::Dense(op) = layer_plan
+            .ffn
+            .as_ref()
+            .ok_or_else(|| VindexError::Parse(format!("layer {layer} carries no FFN")))?
+        else {
+            return Err(VindexError::Parse(format!(
+                "layer {layer} is not a dense FFN"
+            )));
+        };
+        let prepared = self.prepared_layer(layer)?;
+        let ffn = prepared
+            .ffn
+            .as_ref()
+            .ok_or_else(|| VindexError::Parse(format!("prepared layer {layer} carries no FFN")))?;
+        let (_, _, down) = ffn
+            .dense_slices(layer_plan.ffn.as_ref().unwrap())
+            .ok_or_else(|| {
+                VindexError::Parse(format!(
+                    "prepared layer {layer} is not the plan's dense FFN"
+                ))
+            })?;
+        down.decode_f32(self.hidden, op.intermediate_size)
+    }
+
+    /// The effective softmax attention `o_proj` matrix `[hidden, num_q_heads * head_dim]`
+    /// as held by this prepared image (widened/dequantised from its pinned
+    /// resident representation, e.g. exact BF16 or Q8).
+    pub fn attention_o_proj_f32(
+        &self,
+        plan: &ComponentOpPlan,
+        layer: usize,
+    ) -> Result<Vec<f32>, VindexError> {
+        let layer_plan = plan.layers.get(layer).ok_or_else(|| {
+            VindexError::Parse(format!("layer {layer} is outside the component plan"))
+        })?;
+        let attn = layer_plan
+            .attention
+            .softmax()
+            .ok_or_else(|| VindexError::Parse(format!("layer {layer} is not softmax attention")))?;
+        let prepared = self.prepared_layer(layer)?;
+        let PreparedAttention::Softmax(ops) = &prepared.attention else {
+            return Err(VindexError::Parse(format!(
+                "prepared layer {layer} is not softmax attention"
+            )));
+        };
+        ops.w_o
+            .slice()
+            .decode_f32(self.hidden, attn.num_q_heads * attn.head_dim)
+    }
+
     /// Lower `slice` of `plan`'s operands into `backend`'s execution
     /// form, and give the backend its chance to place them (device
     /// residency). Every operand this slice needs is loaded here, and

@@ -1,12 +1,123 @@
 //! Override composition, residual capture and continuation for VINDEX3.
 
+use std::sync::{Arc, Mutex};
+
 use crate::error::LqlError;
 use larql_kv::{shipped_continuations, CanonicalFactory};
+use larql_vindex::format::vindex3::knowledge::KnowledgeOverlay;
 use larql_vindex::format::vindex3::opplan::exec::continuation_authority::ContinuationConfig;
 use larql_vindex::format::vindex3::opplan::exec::continuation_registry::{
     ContinuationFactory, SelectedContinuation,
 };
+use larql_vindex::format::vindex3::opplan::exec::operands::OperandSource;
+use larql_vindex::format::vindex3::opplan::exec::prepared::{ExecutionSlice, PreparedOperands};
 use larql_vindex::tokenizers::Tokenizer;
+
+/// Cache key uniquely identifying the resident `PreparedOperands` for a VINDEX3 session:
+/// every live patched tensor's `(name, sha256)` in order (empty for unpatched base weights).
+#[derive(Clone, PartialEq, Eq)]
+struct PreparedCacheKey {
+    patched_tensors: Vec<(String, String)>,
+}
+
+pub(crate) struct CachedPrepared {
+    key: PreparedCacheKey,
+    operands: Arc<PreparedOperands>,
+}
+
+/// Session-resident cache of lowered `PreparedOperands`, shared across `INFER`, `GENERATE`,
+/// `CAPTURE`, and `DLA` so weights are loaded and Q8-quantised once per patch state.
+#[derive(Default)]
+pub(crate) struct PreparedCache {
+    slot: Mutex<Option<CachedPrepared>>,
+}
+
+impl PreparedCache {
+    pub(crate) fn clear(&self) {
+        if let Ok(mut guard) = self.slot.lock() {
+            *guard = None;
+        }
+    }
+}
+
+/// Resolve and return resident [`PreparedOperands`] for the session's current weight state,
+/// reusing the cached image when the live patched-tensor digests match and rebuilding (and
+/// verifying every patched tensor was read through the operand seam) on a cache miss.
+/// Compose vector edits bypass the cache so every vector mutation executes fresh.
+pub(crate) fn prepared_operands_for_session(
+    runtime: &V3Runtime,
+    overlay: &KnowledgeOverlay,
+    cache: &PreparedCache,
+) -> Result<
+    (
+        Arc<PreparedOperands>,
+        Option<larql_inference::vindex3::OperandOverrides>,
+    ),
+    LqlError,
+> {
+    let overrides = execution_overrides(runtime, overlay)?;
+    if overlay.has_vector_state() {
+        let source = match &overrides {
+            Some(ov) => OperandSource::overlaid(runtime.store(), ov),
+            None => runtime.operands(),
+        };
+        let ops = PreparedOperands::load(
+            runtime.plan(),
+            source,
+            runtime.backend(),
+            ExecutionSlice::Full,
+        )
+        .map_err(|e| LqlError::exec("prepare operands failed", e))?;
+        confirm_patched_weights_ran(overrides.as_ref())?;
+        return Ok((Arc::new(ops), overrides));
+    }
+
+    let patched_tensors = match overlay.live_weights() {
+        Ok(Some(view)) => view
+            .tensors()
+            .iter()
+            .map(|t| (t.tensor.clone(), t.sha256.clone()))
+            .collect(),
+        Ok(None) => Vec::new(),
+        Err(refusal) => {
+            return Err(LqlError::Execution(format!(
+                "refused: stored-weight ops are pending in this session and cannot be executed, \
+                 and the stored weights will not be executed in their place: {refusal}"
+            )));
+        }
+    };
+    let key = PreparedCacheKey { patched_tensors };
+
+    {
+        let mut guard = cache.slot.lock().unwrap();
+        if let Some(entry) = guard.as_ref().filter(|e| e.key == key) {
+            return Ok((Arc::clone(&entry.operands), overrides));
+        }
+        // Release the previous resident image before allocating the replacement so peak RAM
+        // stays bounded to one prepared image during patch sweeps.
+        *guard = None;
+    }
+
+    let source = match &overrides {
+        Some(ov) => OperandSource::overlaid(runtime.store(), ov),
+        None => runtime.operands(),
+    };
+    let ops = Arc::new(
+        PreparedOperands::load(
+            runtime.plan(),
+            source,
+            runtime.backend(),
+            ExecutionSlice::Full,
+        )
+        .map_err(|e| LqlError::exec("prepare operands failed", e))?,
+    );
+    confirm_patched_weights_ran(overrides.as_ref())?;
+    *cache.slot.lock().unwrap() = Some(CachedPrepared {
+        key,
+        operands: Arc::clone(&ops),
+    });
+    Ok((ops, overrides))
+}
 
 /// The one raw-prompt encoder every V3 surface calls — the BOS rule
 /// lives with it in larql-inference, not here.

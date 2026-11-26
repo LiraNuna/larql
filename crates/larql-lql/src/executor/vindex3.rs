@@ -137,8 +137,9 @@ impl Session {
         }
     }
 
-    /// The bound container's runtime, tokenizer, overlay and declared BOS, for a statement that runs the
-    /// program over text: refused without a VINDEX3 binding, or without a tokenizer.
+    /// The bound container's runtime, tokenizer, overlay, declared BOS, and resident prepared cache,
+    /// for a statement that runs the program over text: refused without a VINDEX3 binding, or without
+    /// a tokenizer.
     fn v3_text_program(
         &self,
         statement: &str,
@@ -148,17 +149,19 @@ impl Session {
             &larql_vindex::tokenizers::Tokenizer,
             &larql_vindex::format::vindex3::knowledge::KnowledgeOverlay,
             Option<u32>,
+            &PreparedCache,
         ),
         LqlError,
     > {
-        let (runtime, tokenizer, overlay, bos_token) = match &self.backend {
+        let (runtime, tokenizer, overlay, bos_token, prepared_cache) = match &self.backend {
             Backend::Vindex3 {
                 runtime,
                 tokenizer,
                 overlay,
                 bos_token,
+                prepared_cache,
                 ..
-            } => (runtime, tokenizer, overlay, *bos_token),
+            } => (runtime, tokenizer, overlay, *bos_token, prepared_cache),
             Backend::None => return Err(LqlError::NoBackend),
             _ => {
                 return Err(LqlError::Execution(format!(
@@ -172,7 +175,7 @@ impl Session {
                  token-id capability only"
             ))
         })?;
-        Ok((runtime, tokenizer, overlay, bos_token))
+        Ok((runtime, tokenizer, overlay, bos_token, prepared_cache))
     }
 
     /// The token ids `text` encodes to, as the bound VINDEX3 container's statements encode it. With
@@ -180,7 +183,7 @@ impl Session {
     /// the tokenizer's own special tokens, plus the container's declared BOS where the tokenizer did not add it;
     /// no chat template. Without, the text's tokens alone: how `CAPTURE … CONTINUE "<text>"` encodes its text.
     pub fn tokenize(&self, text: &str, special_tokens: bool) -> Result<Vec<u32>, LqlError> {
-        let (_, tokenizer, _, bos) = self.v3_text_program("TOKENIZE")?;
+        let (_, tokenizer, _, bos, _) = self.v3_text_program("TOKENIZE")?;
         if special_tokens {
             return Ok(encode_raw_prompt(tokenizer, text, bos)?);
         }
@@ -193,7 +196,7 @@ impl Session {
 
     /// The text `ids` decode to, special tokens kept: the decoding `CAPTURE` records for each position's token.
     pub fn decode(&self, ids: &[u32]) -> Result<String, LqlError> {
-        let (_, tokenizer, _, _) = self.v3_text_program("DECODE")?;
+        let (_, tokenizer, _, _, _) = self.v3_text_program("DECODE")?;
         tokenizer
             .decode(ids, false)
             .map_err(|e| LqlError::exec("decode", e))
@@ -203,7 +206,12 @@ impl Session {
     /// distribution's top `top_k`, priced from the batch-prefill logits, and the KNN override where the
     /// session's KNN store answers.
     pub fn predict(&self, prompt: &str, top_k: usize) -> Result<Predictions, LqlError> {
-        let (runtime, tokenizer, overlay, bos_token) = self.v3_text_program("INFER")?;
+        use larql_vindex::format::vindex3::opplan::exec::{
+            execute_prepared_streaming, execute_prepared_streaming_in, requires_continuation,
+        };
+
+        let (runtime, tokenizer, overlay, bos_token, prepared_cache) =
+            self.v3_text_program("INFER")?;
         let prompt_ids = encode_raw_prompt(tokenizer, prompt, bos_token)?;
         let start = std::time::Instant::now();
         // One observed pass over the same traversal generation
@@ -224,24 +232,24 @@ impl Session {
             }
             Ok(())
         };
-        // Compose edits and pending stored-weight ops reach
-        // execution through the operand-source seam; without
-        // either this is the plain pass, bit for bit.
-        let overrides = execution_overrides(runtime, overlay)?;
-        let output = match &overrides {
-            Some(overrides) => runtime
-                .execute_streaming_overlaid(
-                    &prompt_ids,
-                    overrides,
-                    &v3_continuation(runtime)?,
-                    &mut sink,
-                )
-                .map_err(|e| LqlError::exec("v3 prefill failed", e))?,
-            None => runtime
-                .execute_streaming(&prompt_ids, &v3_continuation(runtime)?, &mut sink)
-                .map_err(|e| LqlError::exec("v3 prefill failed", e))?,
+        let (ops, _) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let plan = runtime.plan();
+        let output = if requires_continuation(plan) {
+            let continuation = v3_continuation(runtime)?;
+            execute_prepared_streaming_in(
+                plan,
+                &ops,
+                &prompt_ids,
+                runtime.backend(),
+                None,
+                &mut sink,
+                continuation.build(),
+            )
+            .map_err(|e| LqlError::exec("v3 prefill failed", e))?
+        } else {
+            execute_prepared_streaming(plan, &ops, &prompt_ids, runtime.backend(), None, &mut sink)
+                .map_err(|e| LqlError::exec("v3 prefill failed", e))?
         };
-        confirm_patched_weights_ran(overrides.as_ref())?;
         let logits = output
             .logits
             .ok_or_else(|| LqlError::Execution("the component carries no output head".into()))?;
@@ -274,11 +282,18 @@ impl Session {
     /// The typed operation behind `INFER "<prompt>" GENERATE <n>` on a VINDEX3 binding: greedy continuation
     /// for up to `max_new` tokens, stopping before a built-in stop token.
     pub fn generate(&self, prompt: &str, max_new: usize) -> Result<Generated, LqlError> {
-        let (runtime, tokenizer, overlay, bos_token) = self.v3_text_program("INFER")?;
+        let (runtime, tokenizer, overlay, bos_token, prepared_cache) =
+            self.v3_text_program("INFER")?;
         let prompt_ids = encode_raw_prompt(tokenizer, prompt, bos_token)?;
         let start = std::time::Instant::now();
-        let (result, text) =
-            generate::greedy_generate(runtime, overlay, tokenizer, &prompt_ids, max_new)?;
+        let (result, text) = generate::greedy_generate(
+            runtime,
+            overlay,
+            prepared_cache,
+            tokenizer,
+            &prompt_ids,
+            max_new,
+        )?;
         Ok(Generated {
             prompt_ids,
             prompt_len: result.prompt_len,

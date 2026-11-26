@@ -64,11 +64,14 @@ impl Session {
             path,
             runtime,
             overlay,
+            prepared_cache,
             ..
         } = &mut self.backend
         else {
             return Vec::new();
         };
+        // Release any resident prepared operands for the prior patch set right away.
+        prepared_cache.clear();
         let binding = ExecutionBinding {
             container: path,
             plan: runtime.plan(),

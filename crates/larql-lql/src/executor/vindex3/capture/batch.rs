@@ -8,14 +8,14 @@
 
 use std::collections::BTreeMap;
 
-use larql_inference::vindex3::{OperandOverrides, PlaneEvent, SelectedContinuation};
-use larql_vindex::format::vindex3::opplan::exec::operands::OperandSource;
+use larql_inference::vindex3::{PlaneEvent, SelectedContinuation};
+use larql_vindex::format::vindex3::opplan::exec::prepared::PreparedOperands;
 use larql_vindex::format::vindex3::opplan::exec::{
-    execute_streaming_position_exits_with_taps, requires_continuation, BatchTapRequest, Plane,
+    execute_prepared_position_exits_with_taps, requires_continuation, BatchTapRequest, Plane,
 };
 use larql_vindex::VindexError;
 
-use super::super::{confirm_patched_weights_ran, V3Runtime};
+use super::super::V3Runtime;
 use super::Rows;
 use crate::ast::CaptureSite;
 use crate::error::LqlError;
@@ -27,22 +27,14 @@ const NO_HEAD: &str = "the component carries no output head";
 /// layer, in the order given; one block for a site after the last layer.
 pub(super) fn capture(
     runtime: &V3Runtime,
-    overrides: Option<&OperandOverrides>,
+    ops: &PreparedOperands,
     continuation: &SelectedContinuation,
     ids: &[u32],
     site: CaptureSite,
     layers: &[usize],
     positions: &[usize],
 ) -> Result<Vec<Rows>, LqlError> {
-    let mut results = capture_many(
-        runtime,
-        overrides,
-        continuation,
-        ids,
-        &[site],
-        layers,
-        positions,
-    )?;
+    let mut results = capture_many(runtime, ops, continuation, ids, &[site], layers, positions)?;
     Ok(results.remove(&site).unwrap_or_default())
 }
 
@@ -51,7 +43,7 @@ pub(super) fn capture(
 /// are captured at `positions` after the last layer.
 pub(super) fn capture_many(
     runtime: &V3Runtime,
-    overrides: Option<&OperandOverrides>,
+    ops: &PreparedOperands,
     continuation: &SelectedContinuation,
     ids: &[u32],
     sites: &[CaptureSite],
@@ -106,15 +98,11 @@ pub(super) fn capture_many(
     };
     let exit_positions = if want_exit { positions } else { &[][..] };
     let plan = runtime.plan();
-    let source = match overrides {
-        Some(overrides) => OperandSource::overlaid(runtime.store(), overrides),
-        None => runtime.operands(),
-    };
     // A stack that keeps state beyond softmax attention runs over a fresh provider, as INFER's pass does.
     let state = requires_continuation(plan).then(|| continuation.build());
-    let (observed, tap_out) = execute_streaming_position_exits_with_taps(
+    let (observed, tap_out) = execute_prepared_position_exits_with_taps(
         plan,
-        source,
+        ops,
         ids,
         runtime.backend(),
         state,
@@ -123,7 +111,6 @@ pub(super) fn capture_many(
         &mut sink,
     )
     .map_err(|e| LqlError::exec("capture pass failed", e))?;
-    confirm_patched_weights_ran(overrides)?;
     if observed.output.logits.is_none() {
         return Err(LqlError::Execution(NO_HEAD.into()));
     }

@@ -42,24 +42,70 @@ fn refused(overlay: &mut KnowledgeOverlay, bound: &Bound) -> LiveWeightRefusal {
 
 #[test]
 fn a_source_that_may_manufacture_a_representation_is_refused() {
-    for (source, name) in [
-        (RepresentationSource::Auto, "auto"),
-        (RepresentationSource::Transient, "transient"),
-    ] {
-        let src = source_with_pack();
-        let bound = bind_as(&src.container, None, source);
-        let mut overlay = KnowledgeOverlay::new();
-        stage(&mut overlay, delta(&src));
-        let refusal = refused(&mut overlay, &bound);
-        assert_eq!(
-            refusal,
-            LiveWeightRefusal::SourceNotStored { requested: name }
-        );
-        assert!(
-            refusal.to_string().contains("only under `stored`"),
-            "{refusal}"
-        );
-    }
+    let src = source_with_pack();
+    let bound = bind_as(&src.container, None, RepresentationSource::Transient);
+    let mut overlay = KnowledgeOverlay::new();
+    stage(&mut overlay, delta(&src));
+    let refusal = refused(&mut overlay, &bound);
+    assert_eq!(
+        refusal,
+        LiveWeightRefusal::SourceNotStored {
+            requested: "transient"
+        }
+    );
+    assert!(
+        refusal.to_string().contains("execute under `stored`"),
+        "{refusal}"
+    );
+}
+
+#[test]
+fn auto_source_holds_patched_matrices_at_exact_bf16_without_requantising_them() {
+    use larql_vindex::format::vindex3::opplan::exec::prepared::{ExecutionSlice, PreparedOperands};
+    use larql_vindex::format::vindex3::opplan::exec::production::ProductionBackend;
+    use larql_vindex::format::vindex3::opplan::exec::realization::RealizationForm;
+
+    let src = source_with_pack();
+    let bound = bind_as(&src.container, None, RepresentationSource::Auto);
+    let mut overlay = KnowledgeOverlay::new();
+    stage(&mut overlay, delta(&src));
+    overlay
+        .refresh_live_weights(&bound.binding())
+        .expect("auto permits hybrid live execution");
+    let overrides = overlay
+        .live_weight_overrides()
+        .unwrap()
+        .expect("overrides present");
+
+    let backend = ProductionBackend::new();
+    let source = OperandSource::overlaid(&bound.store, &overrides);
+    let ops = PreparedOperands::load(&bound.plan, source, &backend, ExecutionSlice::Full)
+        .expect("hybrid auto preparation succeeds");
+    overrides
+        .ensure_patched_read()
+        .expect("patched tensor was read through operand seam");
+
+    let patched_record = ops
+        .realizations()
+        .iter()
+        .find(|r| r.planned.operand.tensor == TENSOR)
+        .expect("patched tensor has a realization record");
+    assert!(
+        !matches!(
+            patched_record.selection.realization.form,
+            RealizationForm::Requantise(_)
+        ),
+        "patched tensor must never be requantised under auto: {:?}",
+        patched_record.selection
+    );
+    assert!(
+        !bound
+            .store
+            .runtime_quantised_tensors()
+            .iter()
+            .any(|name| name == TENSOR),
+        "patched tensor must not appear in runtime_quantised_tensors"
+    );
 }
 
 #[test]
@@ -388,9 +434,9 @@ fn a_view_is_held_to_the_ops_in_effect_even_when_nothing_marked_it_stale() {
     assert!(overlay.live_weight_overrides().unwrap().is_some());
 
     // The same holds for a refusal: it is the refusal of the ops it was built for, and of no others.
-    let auto = bind_as(&src.container, None, RepresentationSource::Auto);
+    let transient = bind_as(&src.container, None, RepresentationSource::Transient);
     assert!(matches!(
-        overlay.refresh_live_weights(&auto.binding()),
+        overlay.refresh_live_weights(&transient.binding()),
         Err(LiveWeightRefusal::SourceNotStored { .. })
     ));
     let removed = overlay.patches.pop().expect("the applied patch");

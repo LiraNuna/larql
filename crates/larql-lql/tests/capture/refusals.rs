@@ -123,16 +123,16 @@ fn it_refuses_where_infer_refuses() {
         "tokenizer",
     );
 
-    // Pending stored-weight ops under a source that may quantise at load: INFER is refused, and so is CAPTURE.
+    // Pending stored-weight ops under `transient`: INFER is refused, and so is CAPTURE.
     let fx = Fixture::new();
     let mut s = Session::new();
-    s.set_representation_source(RepresentationSource::Auto);
+    s.set_representation_source(RepresentationSource::Transient);
     run(&mut s, &format!("USE \"{}\";", q(&fx.container)));
-    let free = fx.path("auto.npy");
+    let free = fx.path("transient.npy");
     capture(&mut s, &format!("logits FOR \"{PROMPT}\""), &free);
     assert_eq!(
         sidecar(&free)["execution"]["binding"]["representation_source"],
-        "auto"
+        "transient"
     );
     run(&mut s, STAGE);
     let infer = try_run(&mut s, &format!("INFER \"{PROMPT}\" TOP 1;")).unwrap_err();

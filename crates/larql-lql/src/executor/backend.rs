@@ -81,6 +81,9 @@ pub(crate) enum Backend {
         /// Optional relation classifier loaded from sidecar `feature_labels.json`
         /// and/or `relation_clusters.json` + `feature_clusters.jsonl` in the container.
         relation_classifier: Option<RelationClassifier>,
+        /// Resident prepared operands keyed by the live patched-tensor digests so
+        /// `INFER`, `GENERATE`, `CAPTURE`, and `DLA` reuse Q8/BF16 weights across statements.
+        prepared_cache: crate::executor::vindex3::PreparedCache,
     },
     /// Remote server backend — queries forwarded via HTTP. Every request
     /// carries `session_id`, so mutations and patches live in this

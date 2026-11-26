@@ -364,6 +364,77 @@ fn dla_executes_live_patched_weights_and_reverts_on_discard() {
 }
 
 #[test]
+fn dla_runs_under_auto_source_with_hybrid_live_patches_and_cached_operands() {
+    // Build a fresh container and bind under RepresentationSource::Auto.
+    let (_auto_dir, mut auto_session) = {
+        let (d, s) = lfm3_session();
+        let container = d.path().join("lfm3-bf16.vindex3");
+        drop(s);
+        let mut auto_s = Session::new();
+        auto_s.set_representation_source(larql_lql::RepresentationSource::Auto);
+        let bind = format!("USE \"{}\";", lql_path(&container));
+        auto_s.execute(&parse(&bind).unwrap()).unwrap();
+        (d, auto_s)
+    };
+
+    let base_auto = auto_session
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(200),
+            Some(100),
+        )
+        .expect("DLA runs cleanly under auto representation source");
+    let base_auto_cached = auto_session
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(200),
+            Some(100),
+        )
+        .expect("second DLA reuses resident prepared operands");
+    assert_eq!(
+        base_auto.exact_logit_diff.to_bits(),
+        base_auto_cached.exact_logit_diff.to_bits()
+    );
+    assert!(
+        (base_auto.total_dla - base_auto.exact_logit_diff).abs() < 1e-3,
+        "auto DLA sum {} must match exact diff {}",
+        base_auto.total_dla,
+        base_auto.exact_logit_diff
+    );
+
+    // Stage a live patch under auto (hybrid exact BF16 on patched tensor + auto on unpatched).
+    let stage = "UPDATE WEIGHTS SET DELTA = 16.0 WHERE TENSOR = \"3.feed_forward.w2.weight\" AND ROW = 0 AND COL IN (0, 1, 2, 3);";
+    auto_session.execute(&parse(stage).unwrap()).unwrap();
+    let patched_auto = auto_session
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(200),
+            Some(100),
+        )
+        .expect("hybrid auto patched DLA succeeds");
+    assert!(patched_auto.executes_patched);
+    assert_ne!(
+        patched_auto.exact_logit_diff.to_bits(),
+        base_auto.exact_logit_diff.to_bits()
+    );
+    assert!(
+        (patched_auto.total_dla - patched_auto.exact_logit_diff).abs() < 1e-2,
+        "hybrid auto patched DLA sum {} must match exact diff {}",
+        patched_auto.total_dla,
+        patched_auto.exact_logit_diff
+    );
+}
+
+#[test]
 fn dla_refuses_multi_token_targets_and_bad_layers() {
     let (_dir, mut session) = lfm3_session();
     let err = session

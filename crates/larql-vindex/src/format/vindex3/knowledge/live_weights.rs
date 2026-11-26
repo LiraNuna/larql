@@ -49,9 +49,10 @@ pub struct ExecutionBinding<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LiveWeightRefusal {
     #[error(
-        "the session's representation source is `{requested}`, under which the loader may quantise a patched \
-         matrix at load and execute that instead; stored-weight ops execute only under `stored`, where the \
-         patched bytes are the bytes computed with"
+        "the session's representation source is `{requested}`, under which the loader ignores stored \
+         precision and quantises every matrix at load; stored-weight ops execute under `stored` \
+         (every matrix from stored bytes) or `auto` (patched matrices held at exact BF16 while \
+         unpatched matrices may quantise)"
     )]
     SourceNotStored { requested: &'static str },
     #[error(
@@ -239,7 +240,7 @@ fn build_view(
     binding: &ExecutionBinding<'_>,
 ) -> Result<LiveWeightView, LiveWeightRefusal> {
     let requested = binding.store.representation_source();
-    if requested != RepresentationSource::Stored {
+    if requested == RepresentationSource::Transient {
         return Err(LiveWeightRefusal::SourceNotStored {
             requested: source_name(requested),
         });

@@ -15,14 +15,12 @@ mod sequence;
 pub use geometry::CaptureGeometry;
 pub(crate) use provenance::AppliedPatchFile;
 
-use larql_inference::vindex3::OperandOverrides;
-
 use super::npy::{npy_sha256, NpyDescr, NpyWriter};
 use super::npy_output::{
     container_index, container_path, index_list, literal, output_paths, remove_partial,
     write_sidecar, LARQL_VERSION,
 };
-use super::{execution_overrides, v3_continuation};
+use super::{prepared_operands_for_session, v3_continuation};
 use crate::ast::{CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite};
 use crate::error::LqlError;
 use crate::executor::{Backend, Session};
@@ -226,7 +224,9 @@ impl Session {
         spec: &CaptureSpec<'_>,
         check_output: impl FnOnce() -> Result<T, LqlError>,
     ) -> Result<(Captured, T), LqlError> {
-        let (root, runtime, tokenizer, overlay, bos, patch_files) = match &self.backend {
+        let (root, runtime, tokenizer, overlay, bos, patch_files, prepared_cache) = match &self
+            .backend
+        {
             Backend::Vindex3 {
                 path,
                 runtime,
@@ -234,8 +234,17 @@ impl Session {
                 overlay,
                 bos_token,
                 patch_files,
+                prepared_cache,
                 ..
-            } => (path, runtime, tokenizer, overlay, *bos_token, patch_files),
+            } => (
+                path,
+                runtime,
+                tokenizer,
+                overlay,
+                *bos_token,
+                patch_files,
+                prepared_cache,
+            ),
             Backend::None => return Err(LqlError::NoBackend),
             _ => return Err(refused(
                 "CAPTURE runs a VINDEX3 container's program, and this session is not bound to one",
@@ -257,17 +266,18 @@ impl Session {
         let sequence = sequence::build(
             runtime,
             overlay,
+            prepared_cache,
             tokenizer,
             bos,
             spec.prompt,
             spec.continuation,
         )?;
         let positions = sequence::positions(spec.positions, &sequence)?;
-        let overrides: Option<OperandOverrides> = execution_overrides(runtime, overlay)?;
+        let (ops, overrides) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let continuation = v3_continuation(runtime)?;
         let blocks = batch::capture(
             runtime,
-            overrides.as_ref(),
+            &ops,
             &continuation,
             &sequence.ids,
             site,
@@ -387,7 +397,9 @@ impl Session {
         &self,
         request: &CaptureMultiRequest<'_>,
     ) -> Result<Vec<String>, LqlError> {
-        let (root, runtime, tokenizer, overlay, bos, patch_files) = match &self.backend {
+        let (root, runtime, tokenizer, overlay, bos, patch_files, prepared_cache) = match &self
+            .backend
+        {
             Backend::Vindex3 {
                 path,
                 runtime,
@@ -395,8 +407,17 @@ impl Session {
                 overlay,
                 bos_token,
                 patch_files,
+                prepared_cache,
                 ..
-            } => (path, runtime, tokenizer, overlay, *bos_token, patch_files),
+            } => (
+                path,
+                runtime,
+                tokenizer,
+                overlay,
+                *bos_token,
+                patch_files,
+                prepared_cache,
+            ),
             Backend::None => return Err(LqlError::NoBackend),
             _ => return Err(refused(
                 "CAPTURE runs a VINDEX3 container's program, and this session is not bound to one",
@@ -456,17 +477,18 @@ impl Session {
         let sequence = sequence::build(
             runtime,
             overlay,
+            prepared_cache,
             tokenizer,
             bos,
             request.prompt,
             request.continuation,
         )?;
         let positions = sequence::positions(request.positions, &sequence)?;
-        let overrides: Option<OperandOverrides> = execution_overrides(runtime, overlay)?;
+        let (ops, overrides) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let continuation = v3_continuation(runtime)?;
         let mut all_blocks = batch::capture_many(
             runtime,
-            overrides.as_ref(),
+            &ops,
             &continuation,
             &sequence.ids,
             request.sites,

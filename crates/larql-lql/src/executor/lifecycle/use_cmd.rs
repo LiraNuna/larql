@@ -227,6 +227,7 @@ impl Session {
             bos_token,
             patch_files: Vec::new(),
             relation_classifier,
+            prepared_cache: Default::default(),
         };
         self.reset_binding_state();
         Ok(out)
