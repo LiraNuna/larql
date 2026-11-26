@@ -49,6 +49,7 @@ pub mod live_weights;
 pub mod overlay;
 pub mod postings;
 pub mod reconcile;
+mod top_token_search;
 
 #[cfg(test)]
 mod tests;
@@ -102,6 +103,9 @@ pub struct KnowledgeView {
     embedding: Array2<f32>,
     embed_scale: f32,
     vocab_size: usize,
+    /// Lazily decoded vocabulary + probe indices for exact branch-and-bound
+    /// `top_token` filtering without materialising whole layers.
+    vocab_probes: std::cell::OnceCell<top_token_search::VocabProbeIndex>,
 }
 
 impl KnowledgeView {
@@ -154,6 +158,7 @@ impl KnowledgeView {
             vocab_size: embedding_op.vocab_size,
             embedding,
             embed_scale,
+            vocab_probes: std::cell::OnceCell::new(),
         })
     }
 
@@ -237,20 +242,30 @@ impl KnowledgeView {
             )));
         }
 
+        use rayon::prelude::*;
         let mut output = Vec::with_capacity(features.len());
         for batch in features.chunks(BATCH) {
             let selected = knowledge.down.select(Axis(1), batch);
             let logits = self.embedding.dot(&selected);
-            for column in logits.axis_iter(Axis(1)) {
-                output.push(annotate_logits(&column.to_vec(), &self.tokenizer));
-            }
+            let tokenizer = &self.tokenizer;
+            let batch_metas: Vec<Option<FeatureMeta>> = (0..batch.len())
+                .into_par_iter()
+                .map(|col| {
+                    let col_vals: Vec<f32> = logits.column(col).iter().copied().collect();
+                    annotate_logits(&col_vals, tokenizer)
+                })
+                .collect();
+            output.extend(batch_metas);
         }
         Ok(output)
     }
 
     /// Every feature annotation of one layer (LQL's raw-token views),
-    /// derived on first access.
+    /// derived on first access using batched `embedding × feature_down`
+    /// matrix products so the embedding table is read once per tile rather
+    /// than once per feature.
     pub fn feature_metas(&self, layer: usize) -> Option<&[Option<FeatureMeta>]> {
+        const BATCH: usize = 128;
         let knowledge = self.layers.get(layer)?.as_ref()?;
         // Capture only Sync pieces in the parallel closure (the cell
         // itself is not shareable across threads).
@@ -260,12 +275,21 @@ impl KnowledgeView {
         Some(knowledge.metas.get_or_init(|| {
             use rayon::prelude::*;
             let features = down.shape()[1];
-            (0..features)
-                .into_par_iter()
-                .map(|feature| {
-                    annotate_feature(embedding, &down.column(feature).to_owned(), tokenizer)
-                })
-                .collect()
+            let mut out = Vec::with_capacity(features);
+            for start in (0..features).step_by(BATCH) {
+                let end = (start + BATCH).min(features);
+                let tile = down.slice(ndarray::s![.., start..end]);
+                let logits = embedding.dot(&tile);
+                let batch_metas: Vec<Option<FeatureMeta>> = (0..(end - start))
+                    .into_par_iter()
+                    .map(|col| {
+                        let col_vals: Vec<f32> = logits.column(col).iter().copied().collect();
+                        annotate_logits(&col_vals, tokenizer)
+                    })
+                    .collect();
+                out.extend(batch_metas);
+            }
+            out
         }))
     }
 
@@ -284,8 +308,11 @@ impl KnowledgeView {
             if layer_filter.is_some_and(|l| l != layer) {
                 continue;
             }
-            for feature in 0..self.num_features(layer) {
-                let Some(meta) = self.feature_meta(layer, feature) else {
+            let Some(metas) = self.feature_metas(layer) else {
+                continue;
+            };
+            for (feature, meta) in metas.iter().enumerate() {
+                let Some(meta) = meta.as_ref() else {
                     continue;
                 };
                 let entity_match = entity
@@ -336,15 +363,36 @@ impl KnowledgeView {
     pub fn walk(&self, query: &Array1<f32>, layers: &[usize], top_k: usize) -> WalkTrace {
         let mut trace = Vec::with_capacity(layers.len());
         for &layer in layers {
-            let hits: Vec<WalkHit> = self
-                .gate_knn(layer, query, top_k)
-                .into_iter()
-                .filter_map(|(feature, gate_score)| {
-                    let meta = self.feature_meta(layer, feature)?;
-                    Some(WalkHit::from_gate(layer, feature, gate_score, meta))
-                })
-                .collect();
-            trace.push((layer, hits));
+            let scored = self.gate_knn(layer, query, top_k);
+            if scored.is_empty() {
+                trace.push((layer, Vec::new()));
+                continue;
+            }
+            let cached = self
+                .layers
+                .get(layer)
+                .and_then(|l| l.as_ref())
+                .and_then(|k| k.metas.get());
+            let walk_hits: Vec<WalkHit> = if let Some(metas) = cached {
+                scored
+                    .into_iter()
+                    .filter_map(|(feature, gate_score)| {
+                        let meta = metas.get(feature)?.clone()?;
+                        Some(WalkHit::from_gate(layer, feature, gate_score, meta))
+                    })
+                    .collect()
+            } else {
+                let ids: Vec<usize> = scored.iter().map(|&(f, _)| f).collect();
+                let promoted = self.feature_promotions(layer, &ids).unwrap_or_default();
+                scored
+                    .into_iter()
+                    .zip(promoted)
+                    .filter_map(|((feature, gate_score), meta)| {
+                        Some(WalkHit::from_gate(layer, feature, gate_score, meta?))
+                    })
+                    .collect()
+            };
+            trace.push((layer, walk_hits));
         }
         WalkTrace { layers: trace }
     }

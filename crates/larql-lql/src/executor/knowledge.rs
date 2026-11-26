@@ -64,6 +64,55 @@ impl KnowledgeSource<'_> {
         }
     }
 
+    pub(crate) fn feature_metas_batch(
+        &self,
+        layer: usize,
+        features: &[usize],
+    ) -> Vec<Option<FeatureMeta>> {
+        if features.is_empty() {
+            return Vec::new();
+        }
+        match self {
+            Self::V2(patched) => features
+                .iter()
+                .map(|&f| patched.feature_meta(layer, f))
+                .collect(),
+            Self::V3 { view, overlay } => {
+                let base = view
+                    .feature_promotions(layer, features)
+                    .unwrap_or_else(|_| vec![None; features.len()]);
+                features
+                    .iter()
+                    .zip(base)
+                    .map(|(&f, meta)| overlay.resolve_feature_meta(layer, f, meta))
+                    .collect()
+            }
+        }
+    }
+
+    /// Exact top-token filter on VINDEX3 using branch-and-bound pruning when
+    /// no feature-level overlay edits are active. Returns `None` on V2 (whose
+    /// metadata is already precomputed on disk) or when an overlay requires
+    /// the merged scan path.
+    pub(crate) fn find_by_top_token<F>(
+        &self,
+        layer: usize,
+        predicate: F,
+    ) -> Option<Vec<(usize, FeatureMeta)>>
+    where
+        F: Fn(&str) -> bool + Sync,
+    {
+        match self {
+            Self::V2(_) => None,
+            Self::V3 { view, overlay } => {
+                if overlay.has_feature_state() {
+                    return None;
+                }
+                Some(view.find_features_by_top_token(layer, predicate))
+            }
+        }
+    }
+
     /// Every annotation of one layer (raw-token views). V2 serves
     /// this only in heap mode — mmap vindexes degrade to `None`
     /// exactly as they did before the seam.
@@ -137,12 +186,14 @@ impl KnowledgeSource<'_> {
                 let mut trace_layers = Vec::with_capacity(layers.len());
                 for &layer in layers {
                     let hits = self.gate_knn(layer, query, top_k);
+                    let ids: Vec<usize> = hits.iter().map(|&(f, _)| f).collect();
+                    let metas = self.feature_metas_batch(layer, &ids);
                     let walk_hits: Vec<larql_vindex::WalkHit> = hits
                         .into_iter()
-                        .filter_map(|(feature, gate_score)| {
-                            let meta = self.feature_meta(layer, feature)?;
+                        .zip(metas)
+                        .filter_map(|((feature, gate_score), meta)| {
                             Some(larql_vindex::WalkHit::from_gate(
-                                layer, feature, gate_score, meta,
+                                layer, feature, gate_score, meta?,
                             ))
                         })
                         .collect();

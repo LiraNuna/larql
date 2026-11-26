@@ -51,14 +51,85 @@ impl Session {
         let mut count = 0;
         'outer: for layer in &scan_layers {
             let nf = ctx.source.num_features(*layer);
-            for feat in 0..nf {
+            if let Some(ff) = feature_filter {
+                if ff < nf {
+                    if let Some(meta) = ctx.source.feature_meta(*layer, ff) {
+                        if token_filter
+                            .is_none_or(|tf| meta.top_token.to_lowercase() == tf.to_lowercase())
+                        {
+                            let also = also_display(&format_also(&meta.top_k));
+                            let rel = classifier
+                                .and_then(|rc| rc.label_for_feature(*layer, ff))
+                                .unwrap_or("");
+                            out.push(format!(
+                                "L{:<7} F{:<7} {:16} {:28} {:14} {:>8.4}",
+                                layer, ff, meta.top_token, also, rel, meta.c_score
+                            ));
+                            count += 1;
+                        }
+                    }
+                }
                 if count >= limit {
                     break 'outer;
                 }
-                if let Some(ff) = feature_filter {
-                    if feat != ff {
-                        continue;
+                continue;
+            }
+            if let Some(tf) = token_filter {
+                let wanted = tf.to_lowercase();
+                if let Some(matches) = ctx
+                    .source
+                    .find_by_top_token(*layer, |tok| tok.to_lowercase() == wanted)
+                {
+                    for (feat, meta) in matches {
+                        if count >= limit {
+                            break 'outer;
+                        }
+                        let also = also_display(&format_also(&meta.top_k));
+                        let rel = classifier
+                            .and_then(|rc| rc.label_for_feature(*layer, feat))
+                            .unwrap_or("");
+                        out.push(format!(
+                            "L{:<7} F{:<7} {:16} {:28} {:14} {:>8.4}",
+                            layer, feat, meta.top_token, also, rel, meta.c_score
+                        ));
+                        count += 1;
                     }
+                    continue;
+                }
+            }
+            // Use batched/cached `feature_metas` when filtering by token or
+            // scanning many features; keep single-slot path for tiny LIMITs.
+            let full_scan = token_filter.is_some() || (limit - count) >= nf / 8;
+            if full_scan {
+                if let Some(metas) = ctx.source.feature_metas(*layer) {
+                    for (feat, meta) in metas.iter().enumerate() {
+                        if count >= limit {
+                            break 'outer;
+                        }
+                        let Some(meta) = meta.as_ref() else {
+                            continue;
+                        };
+                        if let Some(tf) = token_filter {
+                            if meta.top_token.to_lowercase() != tf.to_lowercase() {
+                                continue;
+                            }
+                        }
+                        let also = also_display(&format_also(&meta.top_k));
+                        let rel = classifier
+                            .and_then(|rc| rc.label_for_feature(*layer, feat))
+                            .unwrap_or("");
+                        out.push(format!(
+                            "L{:<7} F{:<7} {:16} {:28} {:14} {:>8.4}",
+                            layer, feat, meta.top_token, also, rel, meta.c_score
+                        ));
+                        count += 1;
+                    }
+                    continue;
+                }
+            }
+            for feat in 0..nf {
+                if count >= limit {
+                    break 'outer;
                 }
                 if let Some(meta) = ctx.source.feature_meta(*layer, feat) {
                     if let Some(tf) = token_filter {

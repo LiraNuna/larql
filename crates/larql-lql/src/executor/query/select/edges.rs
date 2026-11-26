@@ -329,8 +329,9 @@ fn collect_edges(
     Ok(())
 }
 
-/// Walk-anchored collection: embed the entity, walk every requested
-/// layer, filter hits by the relation label.
+/// Walk-anchored collection: embed the entity, score FFN gates at every
+/// requested layer, filter by feature and relation label *before* annotating
+/// `feature_down` columns so non-matching hits never pay an unembedding scan.
 #[allow(clippy::too_many_arguments)]
 fn collect_via_walk(
     ctx: &crate::executor::knowledge::BrowseCtx<'_>,
@@ -341,6 +342,13 @@ fn collect_via_walk(
     scan_layers: &[usize],
     rows: &mut Vec<EdgeRow>,
 ) -> Result<(), LqlError> {
+    // Without a relation classifier every slot's label is `""`; if the
+    // predicate cannot match `""` (e.g. `relation = "capital"`), skip the
+    // walk and annotation entirely.
+    if classifier.is_none() && !rel.matches("") {
+        return Ok(());
+    }
+
     let (embed, embed_scale) = ctx.embeddings()?;
     let tokenizer = larql_vindex::load_vindex_tokenizer(ctx.path)
         .map_err(|e| LqlError::exec("failed to load tokenizer", e))?;
@@ -351,29 +359,30 @@ fn collect_via_walk(
         return Ok(());
     };
 
-    let trace = ctx.source.walk(&query, scan_layers, EDGES_WALK_TOP_K);
-
-    for (layer_idx, hits) in &trace.layers {
-        for hit in hits {
+    for &layer_idx in scan_layers {
+        for (feature, gate_score) in ctx.source.gate_knn(layer_idx, &query, EDGES_WALK_TOP_K) {
             if let Some(ff) = feature_filter {
-                if hit.feature != ff {
+                if feature != ff {
                     continue;
                 }
             }
             let rel_label = classifier
-                .and_then(|rc| rc.label_for_feature(*layer_idx, hit.feature))
+                .and_then(|rc| rc.label_for_feature(layer_idx, feature))
                 .unwrap_or("")
                 .to_string();
             if !rel.matches(&rel_label) {
                 continue;
             }
+            let Some(meta) = ctx.source.feature_meta(layer_idx, feature) else {
+                continue;
+            };
             rows.push(EdgeRow {
-                layer: *layer_idx,
-                feature: hit.feature,
-                top_token: hit.meta.top_token.clone(),
-                also: format_also(&hit.meta.top_k),
+                layer: layer_idx,
+                feature,
+                top_token: meta.top_token,
+                also: format_also(&meta.top_k),
                 relation: rel_label,
-                c_score: hit.gate_score,
+                c_score: gate_score,
             });
         }
     }
@@ -392,41 +401,117 @@ fn collect_via_scan(
     scan_layers: &[usize],
     rows: &mut Vec<EdgeRow>,
 ) {
-    for layer in scan_layers {
-        let nf = source.num_features(*layer);
-        for feat_idx in 0..nf {
-            if let Some(ff) = feature_filter {
-                if feat_idx != ff {
-                    continue;
-                }
-            }
-            let Some(meta) = source.feature_meta(*layer, feat_idx) else {
-                continue;
-            };
-            if let Some(ent) = entity_filter {
-                if !meta.top_token.to_lowercase().contains(&ent.to_lowercase()) {
-                    continue;
-                }
-            }
-            let rel_label = classifier
-                .and_then(|rc| rc.label_for_feature(*layer, feat_idx))
-                .unwrap_or("")
-                .to_string();
-            if let Some(rel) = relation_filter {
-                if !rel.matches(&rel_label) {
-                    continue;
-                }
-            }
-            rows.push(EdgeRow {
-                layer: *layer,
-                feature: feat_idx,
-                top_token: meta.top_token.clone(),
-                also: format_also(&meta.top_k),
-                relation: rel_label,
-                c_score: meta.c_score,
-            });
+    if let Some(rel) = relation_filter {
+        if classifier.is_none() && !rel.matches("") {
+            return;
         }
     }
+    for layer in scan_layers {
+        let nf = source.num_features(*layer);
+        if let Some(ff) = feature_filter {
+            if ff >= nf {
+                continue;
+            }
+            if let Some(meta) = source.feature_meta(*layer, ff) {
+                push_scan_row(
+                    *layer,
+                    ff,
+                    &meta,
+                    classifier,
+                    entity_filter,
+                    relation_filter,
+                    rows,
+                );
+            }
+            continue;
+        }
+        // Fast exact top-token pruning on VINDEX3 when filtering by `entity`.
+        if let Some(ent) = entity_filter {
+            let needle = ent.to_lowercase();
+            if let Some(matches) =
+                source.find_by_top_token(*layer, |tok| tok.to_lowercase().contains(&needle))
+            {
+                for (feat_idx, meta) in matches {
+                    push_scan_row(
+                        *layer,
+                        feat_idx,
+                        &meta,
+                        classifier,
+                        None,
+                        relation_filter,
+                        rows,
+                    );
+                }
+                continue;
+            }
+        }
+        // Full-layer scan: prefer `feature_metas` (batched & memoised on
+        // VINDEX3; heap slice on V2) over `nf` single-slot matvecs.
+        if let Some(metas) = source.feature_metas(*layer) {
+            for (feat_idx, meta) in metas.iter().enumerate() {
+                let Some(meta) = meta.as_ref() else {
+                    continue;
+                };
+                push_scan_row(
+                    *layer,
+                    feat_idx,
+                    meta,
+                    classifier,
+                    entity_filter,
+                    relation_filter,
+                    rows,
+                );
+            }
+        } else {
+            for feat_idx in 0..nf {
+                let Some(meta) = source.feature_meta(*layer, feat_idx) else {
+                    continue;
+                };
+                push_scan_row(
+                    *layer,
+                    feat_idx,
+                    &meta,
+                    classifier,
+                    entity_filter,
+                    relation_filter,
+                    rows,
+                );
+            }
+        }
+    }
+}
+
+fn push_scan_row(
+    layer: usize,
+    feat_idx: usize,
+    meta: &larql_vindex::FeatureMeta,
+    classifier: Option<&crate::relations::RelationClassifier>,
+    entity_filter: Option<&str>,
+    relation_filter: Option<RelationPredicate<'_>>,
+    rows: &mut Vec<EdgeRow>,
+) {
+    if let Some(ent) = entity_filter {
+        if !meta.top_token.to_lowercase().contains(&ent.to_lowercase()) {
+            return;
+        }
+    }
+    let rel_label = classifier
+        .and_then(|rc| rc.label_for_feature(layer, feat_idx))
+        .unwrap_or("")
+        .to_string();
+    if let Some(rel) = relation_filter {
+        if !rel.matches(&rel_label) {
+            return;
+        }
+    }
+    rows.push(EdgeRow {
+        layer,
+        feature: feat_idx,
+        top_token: meta.top_token.clone(),
+        also: format_also(&meta.top_k),
+        relation: rel_label,
+        c_score: meta.c_score,
+    });
 }
 
 fn sort_rows(rows: &mut [EdgeRow], ord: &OrderBy) {

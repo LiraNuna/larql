@@ -79,22 +79,31 @@ impl Session {
             std::collections::HashMap::new();
 
         for layer in &scan_layers {
-            let nf = ctx.source.num_features(*layer);
-            for feat in 0..nf {
-                if let Some(meta) = ctx.source.feature_meta(*layer, feat) {
-                    let tok = meta.top_token.trim().to_string();
-                    if !looks_like_entity(&tok) {
-                        continue;
+            let mut record = |meta: &larql_vindex::FeatureMeta| {
+                let tok = meta.top_token.trim().to_string();
+                if !looks_like_entity(&tok) {
+                    return;
+                }
+                if let Some(ef) = entity_filter {
+                    if !tok.to_lowercase().contains(&ef.to_lowercase()) {
+                        return;
                     }
-                    if let Some(ef) = entity_filter {
-                        if !tok.to_lowercase().contains(&ef.to_lowercase()) {
-                            continue;
-                        }
-                    }
-                    let entry = entity_counts.entry(tok).or_insert((0, 0.0));
-                    entry.0 += 1;
-                    if meta.c_score > entry.1 {
-                        entry.1 = meta.c_score;
+                }
+                let entry = entity_counts.entry(tok).or_insert((0, 0.0));
+                entry.0 += 1;
+                if meta.c_score > entry.1 {
+                    entry.1 = meta.c_score;
+                }
+            };
+            if let Some(metas) = ctx.source.feature_metas(*layer) {
+                for meta in metas.iter().flatten() {
+                    record(meta);
+                }
+            } else {
+                let nf = ctx.source.num_features(*layer);
+                for feat in 0..nf {
+                    if let Some(meta) = ctx.source.feature_meta(*layer, feat) {
+                        record(&meta);
                     }
                 }
             }

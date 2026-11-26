@@ -45,8 +45,9 @@ impl Session {
         ));
         out.push(banner(86));
 
-        for (feat, score) in &hits {
-            let meta = ctx.source.feature_meta(nc.layer as usize, *feat);
+        let hit_ids: Vec<usize> = hits.iter().map(|&(f, _)| f).collect();
+        let hit_metas = ctx.source.feature_metas_batch(nc.layer as usize, &hit_ids);
+        for ((feat, score), meta) in hits.iter().zip(hit_metas) {
             let tok = meta
                 .as_ref()
                 .map(|m| m.top_token.clone())

@@ -318,34 +318,65 @@ impl Session {
         out.push("-".repeat(72));
 
         let mut count = 0;
-        for feat_idx in 0..nf {
-            if count >= limit {
-                break;
+        let mut emit = |feat_idx: usize, meta: &larql_vindex::FeatureMeta| -> bool {
+            if let Some(tf) = token_filter {
+                if !meta.top_token.to_lowercase().contains(&tf.to_lowercase()) {
+                    return false;
+                }
             }
-            if let Some(meta) = ctx.source.feature_meta(layer as usize, feat_idx) {
-                // Apply WHERE filters
-                if let Some(tf) = token_filter {
-                    if !meta.top_token.to_lowercase().contains(&tf.to_lowercase()) {
-                        continue;
+            if predicate.score.is_some_and(|s| !s.matches(meta.c_score)) {
+                return false;
+            }
+            let down_tokens: String = meta
+                .top_k
+                .iter()
+                .take(5)
+                .map(|t| t.token.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(format!(
+                "F{:<7} {:<20} {:>10.4} {:>30}",
+                feat_idx, meta.top_token, meta.c_score, down_tokens
+            ));
+            count += 1;
+            count >= limit
+        };
+
+        if let Some(tf) = token_filter {
+            let needle = tf.to_lowercase();
+            if let Some(matches) = ctx
+                .source
+                .find_by_top_token(layer as usize, |tok| tok.to_lowercase().contains(&needle))
+            {
+                for (feat_idx, meta) in matches {
+                    if emit(feat_idx, &meta) {
+                        break;
                     }
                 }
-                if predicate.score.is_some_and(|s| !s.matches(meta.c_score)) {
-                    continue;
+                return Ok(out);
+            }
+        }
+        let full_scan = token_filter.is_some() || predicate.score.is_some() || limit >= nf / 8;
+        if full_scan {
+            if let Some(metas) = ctx.source.feature_metas(layer as usize) {
+                for (feat_idx, meta) in metas.iter().enumerate() {
+                    if let Some(meta) = meta.as_ref() {
+                        if emit(feat_idx, meta) {
+                            break;
+                        }
+                    }
                 }
-
-                let down_tokens: String = meta
-                    .top_k
-                    .iter()
-                    .take(5)
-                    .map(|t| t.token.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                out.push(format!(
-                    "F{:<7} {:<20} {:>10.4} {:>30}",
-                    feat_idx, meta.top_token, meta.c_score, down_tokens
-                ));
-                count += 1;
+                return Ok(out);
+            }
+        }
+        if limit == 0 {
+            return Ok(out);
+        }
+        for feat_idx in 0..nf {
+            if let Some(meta) = ctx.source.feature_meta(layer as usize, feat_idx) {
+                if emit(feat_idx, &meta) {
+                    break;
+                }
             }
         }
 
@@ -371,29 +402,38 @@ impl Session {
             std::collections::HashMap::new();
 
         for layer in &scan_layers {
-            let nf = ctx.source.num_features(*layer);
-            for feat in 0..nf {
-                if let Some(meta) = ctx.source.feature_meta(*layer, feat) {
-                    let tok = meta.top_token.trim().to_string();
-                    // Filter to named entities: starts with uppercase
-                    // ASCII, 3+ chars, all alphabetic. This skips
-                    // function words (the, of, in), subword fragments,
-                    // and non-Latin scripts that are typically noise
-                    // from polysemantic features.
-                    if tok.len() < 3 {
-                        continue;
-                    }
-                    let first = tok.chars().next().unwrap_or(' ');
-                    if !first.is_ascii_uppercase() {
-                        continue;
-                    }
-                    if !tok.chars().all(|c| c.is_alphabetic()) {
-                        continue;
-                    }
-                    let entry = entity_counts.entry(tok).or_insert((0, 0.0));
-                    entry.0 += 1;
-                    if meta.c_score > entry.1 {
-                        entry.1 = meta.c_score;
+            let mut record = |meta: &larql_vindex::FeatureMeta| {
+                let tok = meta.top_token.trim().to_string();
+                // Filter to named entities: starts with uppercase
+                // ASCII, 3+ chars, all alphabetic. This skips
+                // function words (the, of, in), subword fragments,
+                // and non-Latin scripts that are typically noise
+                // from polysemantic features.
+                if tok.len() < 3 {
+                    return;
+                }
+                let first = tok.chars().next().unwrap_or(' ');
+                if !first.is_ascii_uppercase() {
+                    return;
+                }
+                if !tok.chars().all(|c| c.is_alphabetic()) {
+                    return;
+                }
+                let entry = entity_counts.entry(tok).or_insert((0, 0.0));
+                entry.0 += 1;
+                if meta.c_score > entry.1 {
+                    entry.1 = meta.c_score;
+                }
+            };
+            if let Some(metas) = ctx.source.feature_metas(*layer) {
+                for meta in metas.iter().flatten() {
+                    record(meta);
+                }
+            } else {
+                let nf = ctx.source.num_features(*layer);
+                for feat in 0..nf {
+                    if let Some(meta) = ctx.source.feature_meta(*layer, feat) {
+                        record(&meta);
                     }
                 }
             }

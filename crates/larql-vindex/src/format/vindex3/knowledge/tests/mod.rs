@@ -231,3 +231,37 @@ fn find_features_matches_annotation_surfaces() {
         .find_features(Some("zz-no-such-token"), None)
         .is_empty());
 }
+
+#[test]
+fn top_token_branch_and_bound_matches_exhaustive_metas() {
+    let (_c, view) = view_for(miniature_glimmer, "know-top-tok", G_VOCAB);
+    // Pick a real top token from layer 0 BEFORE feature_metas caches the layer,
+    // so find_features_by_top_token exercises the uncached pruning path.
+    let probe_token = view.feature_meta(0, 0).unwrap().top_token;
+    let needle = probe_token.to_lowercase();
+    let pruned = view.find_features_by_top_token(0, |tok| tok.to_lowercase().contains(&needle));
+    let pruned_empty = view.find_features_by_top_token(0, |tok| tok.contains("zz-no-such-token"));
+    assert!(pruned_empty.is_empty());
+
+    // Now materialise exhaustive metas and assert exact agreement.
+    let exhaustive: Vec<(usize, crate::FeatureMeta)> = view
+        .feature_metas(0)
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter_map(|(feat, m)| {
+            let meta = m.as_ref()?;
+            meta.top_token
+                .to_lowercase()
+                .contains(&needle)
+                .then(|| (feat, meta.clone()))
+        })
+        .collect();
+    assert_eq!(pruned.len(), exhaustive.len());
+    for ((pf, pm), (ef, em)) in pruned.iter().zip(&exhaustive) {
+        assert_eq!(pf, ef);
+        assert_eq!(pm.top_token, em.top_token);
+        assert_eq!(pm.top_token_id, em.top_token_id);
+        assert!((pm.c_score - em.c_score).abs() < 1e-5);
+    }
+}
