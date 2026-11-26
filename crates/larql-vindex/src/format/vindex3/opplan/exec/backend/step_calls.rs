@@ -228,6 +228,17 @@ impl<T: PlanBackend + Send + ?Sized> PlanBackend for std::sync::Arc<T> {
         (**self).attention(call)
     }
 
+    fn serves_attn_head_out(&self) -> bool {
+        (**self).serves_attn_head_out()
+    }
+
+    fn attention_with_head_out(
+        &self,
+        call: AttentionCall<'_>,
+    ) -> Result<(AttentionOut, Vec<Vec<f32>>), VindexError> {
+        (**self).attention_with_head_out(call)
+    }
+
     fn attention_step(&self, call: AttentionStepCall<'_>) -> Result<AttentionStepOut, VindexError> {
         (**self).attention_step(call)
     }

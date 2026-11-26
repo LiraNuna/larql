@@ -325,6 +325,41 @@ fn short_conv_internal_sites_capture_exact_signals_and_refuse_softmax_layers() {
     .unwrap_err();
     assert!(err.contains("needs a ShortConv layer"), "{err}");
     assert!(!bad.exists(), "a refused capture writes nothing");
+
+    // Softmax attention per-head output (`attn.head_out`) on sliding (L1) & full (L3) layers.
+    assert_eq!(
+        s.capture_geometry(CaptureSite::AttnHeadOut, &[1, 3])
+            .unwrap()
+            .width,
+        Some(SC_Q_HEADS * SC_HEAD_DIM)
+    );
+    assert_eq!(
+        s.capture_geometry(CaptureSite::AttnHeadOut, &[0])
+            .unwrap()
+            .width,
+        None
+    );
+    let head_out_path = fx.path("attn_head_out.npy");
+    capture(
+        &mut s,
+        &format!("attn.head_out AT LAYERS (1, 3) FOR \"{PROMPT}\" POSITIONS ALL"),
+        &head_out_path,
+    );
+    let head_out = read_npy(&head_out_path);
+    assert_eq!(
+        head_out.shape,
+        vec![2, PROMPT_TOKENS, SC_Q_HEADS * SC_HEAD_DIM]
+    );
+    assert!(head_out.values.iter().any(|&v| v != 0.0));
+    let bad_attn = fx.path("bad_attn.npy");
+    let err = try_capture(
+        &mut s,
+        &format!("attn.head_out AT LAYER 0 FOR \"{PROMPT}\""),
+        &bad_attn,
+    )
+    .unwrap_err();
+    assert!(err.contains("needs a softmax attention layer"), "{err}");
+    assert!(!bad_attn.exists());
 }
 
 fn hex_f64(values: &[f64]) -> Vec<String> {

@@ -14,6 +14,8 @@ pub enum CaptureSite {
     FfnDownInput,
     /// The output of the FFN's down projection, before any post-FFN norm or residual scale.
     FfnDownOutput,
+    /// Softmax attention pre-`o_proj` per-head output (`[num_q_heads * head_dim]`, after any output gate).
+    AttnHeadOut,
     /// `ShortConv` input gate `B` (width `hidden_size`).
     ShortConvGateB,
     /// `ShortConv` output gate `C` (width `hidden_size`).
@@ -30,9 +32,10 @@ pub enum CaptureSite {
 
 impl CaptureSite {
     /// Every site, in forward order.
-    pub const ALL: [CaptureSite; 11] = [
+    pub const ALL: [CaptureSite; 12] = [
         CaptureSite::Residual,
         CaptureSite::PostAttention,
+        CaptureSite::AttnHeadOut,
         CaptureSite::ShortConvGateB,
         CaptureSite::ShortConvGateC,
         CaptureSite::ShortConvConvOut,
@@ -49,6 +52,7 @@ impl CaptureSite {
         match self {
             CaptureSite::Residual => "residual",
             CaptureSite::PostAttention => "post_attention",
+            CaptureSite::AttnHeadOut => "attn.head_out",
             CaptureSite::ShortConvGateB => "short_conv.gate_b",
             CaptureSite::ShortConvGateC => "short_conv.gate_c",
             CaptureSite::ShortConvConvOut => "short_conv.conv_out",

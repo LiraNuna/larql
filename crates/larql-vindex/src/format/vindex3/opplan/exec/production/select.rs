@@ -106,7 +106,36 @@ impl ProductionBackend {
             projected_gate,
             None,
             None,
+            None,
         )
+    }
+
+    /// [`Self::attend_position`], additionally returning the pre-`o_proj`
+    /// gated per-head concatenation `[num_q_heads * head_dim]`.
+    #[allow(clippy::too_many_arguments)]
+    pub(in super::super) fn attend_position_with_head_out<'k>(
+        call: &AttentionCall<'_>,
+        position: usize,
+        query: &[f32],
+        key_of: impl Fn(usize) -> &'k [f32],
+        value_of: impl Fn(usize) -> &'k [f32],
+        gate_input: &[f32],
+        projected_gate: Option<&[f32]>,
+    ) -> Result<(Vec<f32>, Vec<f32>), VindexError> {
+        let mut head_out = Vec::new();
+        let output = Self::attend_position_tapped(
+            call,
+            position,
+            query,
+            key_of,
+            value_of,
+            gate_input,
+            projected_gate,
+            None,
+            None,
+            Some(&mut head_out),
+        )?;
+        Ok((output, head_out))
     }
 
     /// [`Self::attend_position`] with the V3-HEAD-OBS-1 tap: when armed,
@@ -126,6 +155,7 @@ impl ProductionBackend {
         projected_gate: Option<&[f32]>,
         tap: Option<&mut dyn FnMut(AttentionHeadRecord<'_>)>,
         head_intervene: Option<&mut super::super::backend::HeadIntervene<'_>>,
+        head_out_capture: Option<&mut Vec<f32>>,
     ) -> Result<Vec<f32>, VindexError> {
         let head_dim = call.head_dim;
         let q_rows = call.num_q_heads * head_dim;
@@ -239,6 +269,9 @@ impl ProductionBackend {
             }
         }
 
+        if let Some(dst) = head_out_capture {
+            *dst = concat.clone();
+        }
         let mut out = project_matrix(&call.w_o, &concat, call.hidden, q_rows)?;
         add_output_bias(call, &mut out);
         Ok(out)
@@ -287,6 +320,7 @@ impl ProductionBackend {
                     gate.as_deref(),
                     tap,
                     head_intervene,
+                    None,
                 )
             })?;
         Ok(AttentionStepOut {

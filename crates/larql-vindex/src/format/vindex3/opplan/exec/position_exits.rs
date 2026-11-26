@@ -32,6 +32,8 @@ pub struct BatchTapRequest {
     pub ffn_down_output: BTreeSet<usize>,
     /// Layers at which to capture `ShortConv` internal planes (`gate_b`, `gate_c`, `conv_out`, `gated_y`).
     pub short_conv: BTreeSet<usize>,
+    /// Layers at which to capture softmax attention pre-`o_proj` gated head outputs (`[T][num_q_heads * head_dim]`).
+    pub attn_head_out: BTreeSet<usize>,
 }
 
 impl BatchTapRequest {
@@ -39,6 +41,7 @@ impl BatchTapRequest {
         self.ffn_down_input.is_empty()
             && self.ffn_down_output.is_empty()
             && self.short_conv.is_empty()
+            && self.attn_head_out.is_empty()
     }
 }
 
@@ -48,6 +51,7 @@ pub struct BatchTapOutput {
     pub ffn_down_input: BTreeMap<usize, Vec<Vec<f32>>>,
     pub ffn_down_output: BTreeMap<usize, Vec<Vec<f32>>>,
     pub short_conv: BTreeMap<usize, ShortConvBatchPlanes>,
+    pub attn_head_out: BTreeMap<usize, Vec<Vec<f32>>>,
 }
 
 /// What the exit computed at one position.
@@ -149,6 +153,26 @@ pub fn execute_streaming_position_exits_with_taps<'s, B: PlanBackend + ?Sized>(
             return Err(VindexError::Parse(format!(
                 "ShortConv capture at layer {layer} needs a ShortConv layer: this layer's mixer \
                  is not ShortConv"
+            )));
+        }
+    }
+    if !taps.attn_head_out.is_empty() && !backend.serves_attn_head_out() {
+        return Err(VindexError::Parse(format!(
+            "attn.head_out capture is not served by the {} backend",
+            backend.name()
+        )));
+    }
+    for &layer in &taps.attn_head_out {
+        let Some(lp) = plan.layers.get(layer) else {
+            return Err(VindexError::Parse(format!(
+                "layer {layer} is outside the plan's {} layers",
+                plan.layers.len()
+            )));
+        };
+        if lp.attention.softmax().is_none() {
+            return Err(VindexError::Parse(format!(
+                "attn.head_out at layer {layer} needs a softmax attention layer: this layer's \
+                 mixer is not softmax attention"
             )));
         }
     }

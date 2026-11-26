@@ -147,6 +147,61 @@ impl PlanBackend for ProductionBackend {
         })
     }
 
+    fn serves_attn_head_out(&self) -> bool {
+        true
+    }
+
+    fn attention_with_head_out(
+        &self,
+        call: AttentionCall<'_>,
+    ) -> Result<(AttentionOut, Vec<Vec<f32>>), VindexError> {
+        let projected: Vec<ProjectedAttention> = call
+            .inputs
+            .par_iter()
+            .enumerate()
+            .map(|(position, pre)| Self::project_position(&call, position, pre))
+            .collect::<Result<_, VindexError>>()?;
+        let mut queries = Vec::with_capacity(projected.len());
+        let mut keys = Vec::with_capacity(projected.len());
+        let mut values = Vec::with_capacity(projected.len());
+        let mut gates: Vec<Option<Vec<f32>>> = Vec::with_capacity(projected.len());
+        for ProjectedAttention {
+            qkv: (q, k, v),
+            gate,
+        } in projected
+        {
+            queries.push(q);
+            keys.push(k);
+            values.push(v);
+            gates.push(gate);
+        }
+
+        let pairs: Vec<(Vec<f32>, Vec<f32>)> = queries
+            .par_iter()
+            .enumerate()
+            .map(|(position, query)| {
+                Self::attend_position_with_head_out(
+                    &call,
+                    position,
+                    query,
+                    |p| keys[p].as_slice(),
+                    |p| values[p].as_slice(),
+                    &call.inputs[position],
+                    gates[position].as_deref(),
+                )
+            })
+            .collect::<Result<_, VindexError>>()?;
+        let (outputs, head_outs): (Vec<Vec<f32>>, Vec<Vec<f32>>) = pairs.into_iter().unzip();
+        Ok((
+            AttentionOut {
+                outputs,
+                keys,
+                values,
+            },
+            head_outs,
+        ))
+    }
+
     fn attention_step(&self, step: AttentionStepCall<'_>) -> Result<AttentionStepOut, VindexError> {
         Self::attention_step_tapped(step, None, None)
     }

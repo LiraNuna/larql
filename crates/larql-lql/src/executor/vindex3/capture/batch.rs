@@ -70,6 +70,7 @@ pub(super) fn capture_many(
             CaptureSite::FfnInput => want_ffn_in = true,
             CaptureSite::FfnDownInput => taps.ffn_down_input.extend(layers.iter().copied()),
             CaptureSite::FfnDownOutput => taps.ffn_down_output.extend(layers.iter().copied()),
+            CaptureSite::AttnHeadOut => taps.attn_head_out.extend(layers.iter().copied()),
             CaptureSite::ShortConvGateB
             | CaptureSite::ShortConvGateC
             | CaptureSite::ShortConvConvOut
@@ -158,6 +159,16 @@ pub(super) fn capture_many(
                 .map(|l| {
                     tap_out
                         .ffn_down_output
+                        .get(l)
+                        .map(|rows| pick_positions(rows))
+                        .unwrap_or_default()
+                })
+                .collect(),
+            CaptureSite::AttnHeadOut => layers
+                .iter()
+                .map(|l| {
+                    tap_out
+                        .attn_head_out
                         .get(l)
                         .map(|rows| pick_positions(rows))
                         .unwrap_or_default()

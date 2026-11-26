@@ -89,6 +89,25 @@ pub trait PlanBackend: Sync {
     /// pin them together.
     fn attention(&self, call: AttentionCall<'_>) -> Result<AttentionOut, VindexError>;
 
+    /// Whether [`Self::attention_with_head_out`] returns per-head attention
+    /// outputs immediately before `o_proj` (`[T][num_q_heads * head_dim]`,
+    /// after any output gate).
+    fn serves_attn_head_out(&self) -> bool {
+        false
+    }
+
+    /// [`Self::attention`], additionally returning each position's pre-`o_proj`
+    /// gated per-head concatenation `[num_q_heads * head_dim]`.
+    fn attention_with_head_out(
+        &self,
+        _call: AttentionCall<'_>,
+    ) -> Result<(AttentionOut, Vec<Vec<f32>>), VindexError> {
+        Err(VindexError::Parse(format!(
+            "attn.head_out capture is not served by the {} backend",
+            self.name()
+        )))
+    }
+
     /// One position's attention against cached K/V — the decode step.
     ///
     /// Must realise exactly the arithmetic its own [`Self::attention`]

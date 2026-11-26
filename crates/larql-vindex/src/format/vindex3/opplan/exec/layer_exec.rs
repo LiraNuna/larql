@@ -355,14 +355,21 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
                 .attention
                 .softmax()
                 .expect("prepared softmax operands imply a softmax op");
+            let want_head_out = taps
+                .as_ref()
+                .is_some_and(|(req, _)| req.attn_head_out.contains(&index));
             match kv {
                 Some((kv, layer_index)) if kv.position() == 0 => {
-                    let out = backend.attention(ops.call(
-                        attention_op,
-                        &inputs,
-                        layer.declared_norm_eps,
-                        hidden,
-                    ))?;
+                    let call = ops.call(attention_op, &inputs, layer.declared_norm_eps, hidden);
+                    let out = if want_head_out {
+                        let (out, head_outs) = backend.attention_with_head_out(call)?;
+                        if let Some((_, tap_out)) = taps.as_mut() {
+                            tap_out.attn_head_out.insert(index, head_outs);
+                        }
+                        out
+                    } else {
+                        backend.attention(call)?
+                    };
                     for (key, value) in out.keys.into_iter().zip(out.values) {
                         kv.append(layer_index, key, value);
                     }
@@ -382,14 +389,16 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
                     )?
                 }
                 None => {
-                    backend
-                        .attention(ops.call(
-                            attention_op,
-                            &inputs,
-                            layer.declared_norm_eps,
-                            hidden,
-                        ))?
-                        .outputs
+                    let call = ops.call(attention_op, &inputs, layer.declared_norm_eps, hidden);
+                    if want_head_out {
+                        let (out, head_outs) = backend.attention_with_head_out(call)?;
+                        if let Some((_, tap_out)) = taps.as_mut() {
+                            tap_out.attn_head_out.insert(index, head_outs);
+                        }
+                        out.outputs
+                    } else {
+                        backend.attention(call)?.outputs
+                    }
                 }
             }
         }

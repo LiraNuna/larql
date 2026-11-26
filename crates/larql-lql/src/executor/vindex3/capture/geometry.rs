@@ -60,6 +60,16 @@ impl Session {
                 })
                 .collect::<Option<Vec<_>>>()
                 .and_then(|sizes| sizes.into_iter().max()),
+            CaptureSite::AttnHeadOut => layers
+                .iter()
+                .map(|&l| {
+                    plan.layers
+                        .get(l)
+                        .and_then(|layer| layer.attention.softmax())
+                        .map(|op| op.num_q_heads * op.head_dim)
+                })
+                .collect::<Option<Vec<_>>>()
+                .and_then(|sizes| sizes.into_iter().max()),
             CaptureSite::ShortConvGateB
             | CaptureSite::ShortConvGateC
             | CaptureSite::ShortConvConvOut
