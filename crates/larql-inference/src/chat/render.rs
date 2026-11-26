@@ -118,12 +118,50 @@ fn build_env(template_str: &str) -> Result<Environment<'static>, minijinja::Erro
     // keep rendering deterministic; a richer runtime can override this.
     env.add_function("strftime_now", |_fmt: String| -> String { String::new() });
 
-    // Compile the template. Wrap syntax errors so the outer `get_template`
-    // call surfaces a useful diagnostic instead of a bare `TemplateNotFound`.
-    let template_owned = template_str.to_string();
+    // Compile the template. Rewrite HF's assistant-masking `{% generation %}`
+    // / `{% endgeneration %}` block tags into Jinja2 comments preserving
+    // whitespace-control (`-`) and line numbers, since they are inert during
+    // prompt rendering and `minijinja` does not ship HF's custom extension.
+    // Wrap syntax errors so the outer `get_template` call surfaces a useful
+    // diagnostic instead of a bare `TemplateNotFound`.
+    let template_owned = strip_hf_generation_tags(template_str);
     env.add_template_owned("chat", template_owned)
         .map_err(|e| minijinja::Error::new(minijinja::ErrorKind::SyntaxError, e.to_string()))?;
     Ok(env)
+}
+
+/// Convert HF assistant-masking tags (`{% generation %}`, `{%- generation -%}`,
+/// `{% endgeneration %}`, `{%- endgeneration -%}`) into Jinja2 comments
+/// (`{# ... #}` / `{#- ... -#}`), preserving exact whitespace-trim control and
+/// line numbers. Non-matching `{% ... %}` blocks are copied verbatim.
+fn strip_hf_generation_tags(template: &str) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find("{%") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("%}") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let inner = &after_open[..close];
+        let core = inner
+            .strip_prefix('-')
+            .unwrap_or(inner)
+            .strip_suffix('-')
+            .unwrap_or_else(|| inner.strip_prefix('-').unwrap_or(inner))
+            .trim();
+        if matches!(core, "generation" | "endgeneration") {
+            out.push_str("{#");
+            out.push_str(inner);
+            out.push_str("#}");
+        } else {
+            out.push_str(&rest[open..open + 2 + close + 2]);
+        }
+        rest = &after_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Read a tokenizer_config field that may be either a plain string or a
@@ -308,5 +346,41 @@ mod tests {
         let tmpl = "[{{ bos_token }}]";
         let out = render_chat_template(tmpl, &cfg, "x").unwrap();
         assert_eq!(out, "[]");
+    }
+
+    #[test]
+    fn strips_hf_generation_mask_tags_preserving_whitespace_control() {
+        let cfg: Value =
+            serde_json::from_str(r#"{"bos_token": "<|startoftext|>", "eos_token": "<|im_end|>"}"#)
+                .unwrap();
+        let tmpl = "{{- bos_token -}}\n\
+            {%- for m in messages -%}\n\
+                {{- '<|im_start|>' + m.role + '\\n' -}}\n\
+                {%- if m.role == 'assistant' -%}\n\
+                    {%- generation -%}\n\
+                    {{- m.content -}}\n\
+                    {{- '<|im_end|>\\n' -}}\n\
+                    {%- endgeneration -%}\n\
+                {%- else -%}\n\
+                    {{- m.content + '<|im_end|>\\n' -}}\n\
+                {%- endif -%}\n\
+            {%- endfor -%}\n\
+            {%- if add_generation_prompt -%}\n\
+                {{- '<|im_start|>assistant\\n' -}}\n\
+            {%- endif -%}";
+        let out = render_chat_template_multi(
+            tmpl,
+            &cfg,
+            &msgs(&[("user", "Hi"), ("assistant", "Hello!"), ("user", "2+2?")]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "<|startoftext|><|im_start|>user\nHi<|im_end|>\n\
+             <|im_start|>assistant\nHello!<|im_end|>\n\
+             <|im_start|>user\n2+2?<|im_end|>\n\
+             <|im_start|>assistant\n"
+        );
     }
 }

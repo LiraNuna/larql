@@ -182,13 +182,14 @@ pub fn render_user_prompt(
     }
 
     let system_prompt = options.system_prompt(family);
-    if options.thinking || system_prompt.is_some() {
+    if options.thinking.is_some() || system_prompt.is_some() {
         // Multi-message render path. Prefer the vindex's own template when
         // available; fall back to a family-default for vindexes extracted
         // before the chat-template snapshot was added (early Gemma 4 31B
         // extracts ship without `chat_template.jinja`, so the dense Metal
         // path silently sent raw prompts and the model looped).
-        let template_str = read_chat_template(vindex_dir)
+        let cfg = source::load_tokenizer_config(vindex_dir);
+        let template_str = source::container_template(vindex_dir, &cfg)
             .or_else(|| family_default_template(family))
             .ok_or_else(|| {
                 format!(
@@ -197,7 +198,6 @@ pub fn render_user_prompt(
                  set LARQL_RAW_PROMPT=1 to send the raw prompt"
                 )
             })?;
-        let cfg = Value::Object(Default::default());
         let mut messages: Vec<(String, String)> = Vec::new();
         if let Some(sys) = system_prompt.as_deref() {
             messages.push(("system".to_string(), sys.to_string()));
@@ -207,7 +207,7 @@ pub fn render_user_prompt(
             &template_str,
             &cfg,
             &messages,
-            options.thinking,
+            options.thinking.unwrap_or(false),
         )
         .map_err(|e| format!("render chat template: {e}"));
     }
@@ -228,6 +228,7 @@ pub(super) fn default_system_prompt_for_family(family: &str) -> Option<&'static 
 /// Read the model's chat template, looking in `chat_template.jinja` first
 /// (newer convention — Gemma 4) then `tokenizer_config.json::chat_template`
 /// (older — Gemma 2/3, Llama 3). Returns None when neither is present.
+#[cfg(test)]
 fn read_chat_template(vindex_dir: &Path) -> Option<String> {
     source::container_template(vindex_dir, &source::load_tokenizer_config(vindex_dir))
 }

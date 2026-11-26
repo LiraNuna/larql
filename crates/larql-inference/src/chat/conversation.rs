@@ -170,7 +170,7 @@ pub fn render_conversation(
     let system = (!has_own_system)
         .then(|| options.system_prompt(family))
         .flatten();
-    let shaped = options.thinking || system.is_some();
+    let shaped = options.thinking.is_some() || system.is_some();
     let cfg = load_tokenizer_config(vindex_dir);
     let template = container_template(vindex_dir, &cfg)
         .or_else(|| shaped.then(|| family_default_template(family)).flatten());
@@ -185,7 +185,7 @@ pub fn render_conversation(
         .into_iter()
         .chain(turns.iter().map(|t| (t.role.clone(), t.content.clone())))
         .collect();
-    let enable_thinking = shaped.then_some(options.thinking);
+    let enable_thinking = options.thinking.or_else(|| shaped.then_some(false));
     let prompt = render_messages(&template, &cfg, &messages, enable_thinking)
         .map_err(|e| format!("render chat template: {e}"))?;
     Ok(RenderedConversation {

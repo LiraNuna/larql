@@ -114,6 +114,18 @@ fn thinking_env_is_stated_true() {
 }
 
 #[test]
+fn thinking_env_zero_explicitly_states_false() {
+    let _g = env(&[(ENV_THINKING, "0")]);
+    let tmp = tempfile::tempdir().unwrap();
+    write_jinja(tmp.path(), SHOW_ALL);
+    write_tokenizer_config(tmp.path(), r#"{"bos_token":"<s>"}"#);
+    let conv = render_conversation(tmp.path(), PLAIN_FAMILY, &[ChatTurn::user("u")]).unwrap();
+    let single = render_user_prompt(tmp.path(), PLAIN_FAMILY, "u").unwrap();
+    assert_eq!(conv.prompt, "<s><user>u[think=false]<assistant>");
+    assert_eq!(single, conv.prompt);
+}
+
+#[test]
 fn the_registry_fallback_serves_a_shaped_family_without_a_template() {
     let _g = env(&[]);
     let tmp = tempfile::tempdir().unwrap();
