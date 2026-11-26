@@ -22,6 +22,7 @@ use super::address::CarrierAddress;
 use super::hyper_connection::{Bundle, SinkhornSplit};
 use super::intervene::InterventionKind;
 use super::intervene_heads::HeadInterventionKind;
+use super::intervene_short_conv::ShortConvInterventionKind;
 
 /// One decode step's observation events, in execution order.
 ///
@@ -82,6 +83,15 @@ pub enum StepEvent {
         layer: usize,
         head: usize,
         kind: HeadInterventionKind,
+    },
+    /// Per-channel `ShortConv` observation fired on this layer before `out_proj`.
+    ShortConvObserved { layer: usize, channels: usize },
+    /// A `ShortConv` channel intervention fired on `gated_y[channel]` before `out_proj`,
+    /// after any pre-intervention `ShortConvRecord` was emitted.
+    ShortConvIntervened {
+        layer: usize,
+        channel: usize,
+        kind: ShortConvInterventionKind,
     },
 }
 
@@ -420,6 +430,40 @@ pub trait StepObserver {
     /// image without a head. Borrowed and observation-only. Default:
     /// ignore.
     fn head_input(&mut self, _position: usize, _values: &[f32]) {}
+
+    /// Request per-channel `ShortConv` gate/convolution activations on
+    /// `ShortConv` layers before `out_proj`. Off by default so unobserved
+    /// steps pay zero extra allocation.
+    fn wants_short_conv(&self) -> bool {
+        false
+    }
+
+    /// Narrow an armed `ShortConv` capture to selected `(layer, position)` pairs.
+    fn wants_short_conv_at(&self, _layer: usize, _position: usize) -> bool {
+        self.wants_short_conv()
+    }
+
+    /// Observe one `ShortConv` layer's pre-`out_proj` channel activations
+    /// (always pre-intervention), borrowed inside the step before
+    /// `StepEvent::ShortConvObserved`.
+    fn short_conv(&mut self, _record: ShortConvRecord<'_>) {}
+}
+
+/// One `ShortConv` layer's per-channel intermediate activations at one
+/// decode position, borrowed before `out_proj` (and before any channel
+/// intervention).
+#[derive(Debug, Clone, Copy)]
+pub struct ShortConvRecord<'a> {
+    pub layer: usize,
+    pub position: usize,
+    /// Input gate `B` (width `hidden_size`).
+    pub gate_b: &'a [f32],
+    /// Output gate `C` (width `hidden_size`).
+    pub gate_c: &'a [f32],
+    /// Depthwise causal conv1d output `conv(B * x)` (width `hidden_size`).
+    pub conv_out: &'a [f32],
+    /// Pre-intervention gated output `C * conv(B * x)` fed to `out_proj` (width `hidden_size`).
+    pub gated_y: &'a [f32],
 }
 
 /// One query head at one attention write (V3-HEAD-OBS-1, property A2):

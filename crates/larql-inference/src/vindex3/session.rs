@@ -181,4 +181,26 @@ impl<B: PlanBackend> Vindex3Session<'_, B> {
             .inner
             .step_intervened(token, observer, interventions, head_interventions)?)
     }
+
+    /// Like [`Self::step_intervened`], additionally admitting and applying
+    /// per-channel `ShortConv` interventions before `out_proj`.
+    pub fn step_short_conv_intervened(
+        &mut self,
+        token: u32,
+        observer: &mut dyn larql_vindex::format::vindex3::opplan::exec::observe::StepObserver,
+        interventions: &larql_vindex::format::vindex3::opplan::exec::intervene::InterventionPlan,
+        head_interventions: &larql_vindex::format::vindex3::opplan::exec::intervene_heads::HeadInterventionPlan,
+        short_conv_interventions: &larql_vindex::format::vindex3::opplan::exec::intervene_short_conv::ShortConvInterventionPlan,
+    ) -> Result<
+        larql_vindex::format::vindex3::opplan::exec::intervene::InterventionStepOutput,
+        InferenceError,
+    > {
+        Ok(self.inner.step_short_conv_intervened(
+            token,
+            observer,
+            interventions,
+            head_interventions,
+            short_conv_interventions,
+        )?)
+    }
 }

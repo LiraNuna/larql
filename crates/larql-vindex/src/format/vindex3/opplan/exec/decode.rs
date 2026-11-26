@@ -32,6 +32,7 @@ use super::continuation_registry::BoxedContinuation;
 use super::hyper_connection::{self, Bundle, Mutation, SiteReduction};
 use super::intervene::{Firing, Intervention};
 use super::intervene_heads::HeadFiring;
+use super::intervene_short_conv::ShortConvFiring;
 use super::kv::KvState;
 use super::observe::{
     AttnResBoundaryRecord, AttnResSiteRecord, CarrierForm, CarrierTransition, CarrierWriteRecord,
@@ -180,6 +181,8 @@ pub(super) struct StepRun {
     /// Every head intervention that fired on this step, in execution
     /// order (V3-INTERVENE-2). Empty on the production step.
     pub(super) head_firings: Vec<HeadFiring>,
+    /// Every ShortConv channel intervention that fired on this step.
+    pub(super) short_conv_firings: Vec<ShortConvFiring>,
     /// The `[hidden]` vector the exit reduced to, before the final norm.
     #[cfg(test)]
     pub(super) exit: Option<Vec<f32>>,

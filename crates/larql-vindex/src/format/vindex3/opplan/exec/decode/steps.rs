@@ -6,6 +6,7 @@ use super::super::continuation_registry::BoxedContinuation;
 use super::super::hyper_connection::Mutation;
 use super::super::intervene::{InterventionPlan, InterventionStepOutput};
 use super::super::intervene_heads::HeadInterventionPlan;
+use super::super::intervene_short_conv::ShortConvInterventionPlan;
 use super::super::kv::{settle_block, unusable, KvState};
 use super::super::observe::{NoopObserver, StepObserver};
 use super::super::operands::OperandSource;
@@ -186,6 +187,7 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
             Mutation::None,
             &InterventionPlan::none(),
             &HeadInterventionPlan::none(),
+            &ShortConvInterventionPlan::none(),
         )?;
         Ok(StepOutput { logits: run.logits })
     }
@@ -339,6 +341,7 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
             Mutation::None,
             &InterventionPlan::none(),
             &HeadInterventionPlan::none(),
+            &ShortConvInterventionPlan::none(),
         )?;
         Ok(StepOutput { logits: run.logits })
     }
@@ -365,6 +368,27 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
             observer,
             interventions,
             head_interventions,
+            &ShortConvInterventionPlan::none(),
+        )
+    }
+
+    /// Like [`Self::step_intervened`], additionally admitting and applying
+    /// per-channel `ShortConv` interventions on `gated_y = C * conv(B * x)`
+    /// before `out_proj`.
+    pub fn step_short_conv_intervened(
+        &mut self,
+        token: u32,
+        observer: &mut dyn StepObserver,
+        interventions: &InterventionPlan,
+        head_interventions: &HeadInterventionPlan,
+        short_conv_interventions: &ShortConvInterventionPlan,
+    ) -> Result<InterventionStepOutput, VindexError> {
+        self.step_entered(
+            Entry::Token(token),
+            observer,
+            interventions,
+            head_interventions,
+            short_conv_interventions,
         )
     }
 
@@ -398,17 +422,19 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
             observer,
             interventions,
             head_interventions,
+            &ShortConvInterventionPlan::none(),
         )
     }
 
     /// The one admitted entry both public intervened steps share: backend
-    /// capability refusals, then both plans' admission, then the run.
+    /// capability refusals, then all plans' admission, then the run.
     pub(super) fn step_entered(
         &mut self,
         entry: Entry,
         observer: &mut dyn StepObserver,
         interventions: &InterventionPlan,
         head_interventions: &HeadInterventionPlan,
+        short_conv_interventions: &ShortConvInterventionPlan,
     ) -> Result<InterventionStepOutput, VindexError> {
         if observer.wants_attention_heads() && !self.backend.serves_attention_heads() {
             return Err(VindexError::Parse(format!(
@@ -426,17 +452,20 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
         }
         interventions.admit(self.plan, self.ops.get())?;
         head_interventions.admit(self.plan, self.ops.get())?;
+        short_conv_interventions.admit(self.plan, self.ops.get())?;
         let run = self.run(
             entry,
             observer,
             Mutation::None,
             interventions,
             head_interventions,
+            short_conv_interventions,
         )?;
         Ok(InterventionStepOutput {
             logits: run.logits,
             firings: run.firings,
             head_firings: run.head_firings,
+            short_conv_firings: run.short_conv_firings,
         })
     }
 
@@ -456,6 +485,7 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
             mutation,
             &InterventionPlan::none(),
             &HeadInterventionPlan::none(),
+            &ShortConvInterventionPlan::none(),
         )
     }
 
@@ -475,6 +505,7 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
             mutation,
             &InterventionPlan::none(),
             &HeadInterventionPlan::none(),
+            &ShortConvInterventionPlan::none(),
         )
     }
 

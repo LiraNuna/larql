@@ -48,7 +48,7 @@ use crate::format::vindex3::opplan::exec::reference::ReferenceBackend;
 use crate::format::vindex3::opplan::{plan_component_ops, LayerAttention};
 use crate::format::vindex3::plan::plan_system;
 
-const HIDDEN: usize = 16;
+pub(super) const HIDDEN: usize = 16;
 const INTERMEDIATE: usize = 24;
 const VOCAB: usize = 31;
 const Q_HEADS: usize = 4;
@@ -58,10 +58,10 @@ const CONV_L_CACHE: usize = 3;
 const SLIDING_WINDOW: usize = 3;
 
 #[derive(Clone, Copy)]
-struct Lfm3FixtureOpts {
-    use_sandwich_norm: bool,
-    conv_bias: bool,
-    tie_word_embeddings: bool,
+pub(super) struct Lfm3FixtureOpts {
+    pub(super) use_sandwich_norm: bool,
+    pub(super) conv_bias: bool,
+    pub(super) tie_word_embeddings: bool,
 }
 
 impl Default for Lfm3FixtureOpts {
@@ -74,7 +74,7 @@ impl Default for Lfm3FixtureOpts {
     }
 }
 
-fn write_miniature_lfm3(dir: &Path, opts: Lfm3FixtureOpts) {
+pub(super) fn write_miniature_lfm3(dir: &Path, opts: Lfm3FixtureOpts) {
     let config = serde_json::json!({
         "architectures": ["Lfm3ForCausalLM"],
         "model_type": "lfm3",
@@ -248,7 +248,7 @@ fn write_miniature_lfm3(dir: &Path, opts: Lfm3FixtureOpts) {
     shard.write(dir);
 }
 
-fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+pub(super) fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
     a.iter()
         .zip(b.iter())

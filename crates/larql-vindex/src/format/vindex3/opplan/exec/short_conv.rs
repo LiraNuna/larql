@@ -24,6 +24,7 @@ use super::continuation::{
 };
 use super::cpu::WeightRows;
 use super::gated_delta::DenseProjections;
+use super::observe::ShortConvRecord;
 use super::timing::{timed, OpClass};
 
 /// Buffer index for the rolling `[hidden_size, conv_l_cache]` conv cache.
@@ -126,6 +127,104 @@ pub fn layer_forward_with(
     }
 
     ShortConvPlanes { output }
+}
+
+/// Borrowed callback invoked with each `ShortConv` layer's pre-`out_proj` activations.
+pub type ShortConvObserveCb<'a> = &'a mut dyn FnMut(ShortConvRecord<'_>);
+
+/// Borrowed callback invoked per channel on `gated_y` before `out_proj`.
+pub type ShortConvInterveneCb<'a> = &'a mut dyn FnMut(usize, &mut f32);
+
+/// Execute one single-position `ShortConv` decode step with optional
+/// pre-`out_proj` channel observation and/or in-place channel interventions.
+///
+/// Arithmetic order is identical to [`layer_forward_with`] for `t_len == 1`,
+/// so observation without interventions is bit-exact to the unobserved path.
+/// When both `observe` and `intervene` are supplied, `observe` always sees
+/// the pre-intervention `gated_y`, and `intervene` mutates `gated_y[ch]`
+/// immediately before `out_proj`.
+#[allow(clippy::too_many_arguments)]
+pub fn layer_step_observed_and_intervened(
+    op: &ShortConvOp,
+    w: &ShortConvWeights<'_>,
+    input: &[f32],
+    state: &mut RecurrentState,
+    proj: &dyn DenseProjections,
+    layer: usize,
+    position: usize,
+    mut observe: Option<ShortConvObserveCb<'_>>,
+    mut intervene: Option<ShortConvInterveneCb<'_>>,
+) -> Vec<f32> {
+    let d = op.hidden_size;
+    let l_cache = op.conv_l_cache;
+    let _site = super::cpu::ledger::in_site(super::cpu::ledger::Site::Recurrent);
+
+    // Stage 1: fused input projection `[1, 3 * D]`.
+    let rows = [input];
+    let mut mixed = proj.project_many(w.in_proj, &rows, 3 * d);
+    if let Some(bias) = w.in_proj_bias {
+        for (v, &b) in mixed[0].iter_mut().zip(bias) {
+            *v += b;
+        }
+    }
+
+    // Stage 2: gated causal depthwise conv1d + output gating `y = C * conv(B * x)`.
+    let mut gated = vec![0.0f32; d];
+    let mut conv_out = if observe.is_some() {
+        vec![0.0f32; d]
+    } else {
+        Vec::new()
+    };
+    let convolution = timed(OpClass::DeltaConv);
+    let cells = state.buffer_mut(CONV_STATE).cells_mut();
+    let b_vec = &mixed[0][..d];
+    let c_vec = &mixed[0][d..2 * d];
+    let x_vec = &mixed[0][2 * d..3 * d];
+    for ch in 0..d {
+        let bx = b_vec[ch] * x_vec[ch];
+        let state_row = &mut cells[ch * l_cache..(ch + 1) * l_cache];
+        if l_cache > 1 {
+            state_row.copy_within(1..l_cache, 0);
+        }
+        state_row[l_cache - 1] = bx;
+        let taps = &w.conv_weight[ch * l_cache..(ch + 1) * l_cache];
+        let mut acc = w.conv_bias.map_or(0.0, |b| b[ch]);
+        for i in 0..l_cache {
+            acc += state_row[i] * taps[i];
+        }
+        if !conv_out.is_empty() {
+            conv_out[ch] = acc;
+        }
+        gated[ch] = c_vec[ch] * acc;
+    }
+    drop(convolution);
+
+    if let Some(obs) = observe.as_mut() {
+        obs(ShortConvRecord {
+            layer,
+            position,
+            gate_b: b_vec,
+            gate_c: c_vec,
+            conv_out: &conv_out,
+            gated_y: &gated,
+        });
+    }
+
+    if let Some(intv) = intervene.as_mut() {
+        for (ch, y) in gated.iter_mut().enumerate() {
+            intv(ch, y);
+        }
+    }
+
+    // Stage 3: output projection `[1, D]`.
+    let gated_refs = [gated.as_slice()];
+    let mut output = proj.project_many(w.out_proj, &gated_refs, d);
+    if let Some(bias) = w.out_proj_bias {
+        for (v, &b) in output[0].iter_mut().zip(bias) {
+            *v += b;
+        }
+    }
+    output.remove(0)
 }
 
 #[cfg(test)]

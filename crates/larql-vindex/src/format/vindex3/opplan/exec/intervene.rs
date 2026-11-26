@@ -286,6 +286,9 @@ pub struct InterventionStepOutput {
     /// V3-INTERVENE-2: which declared head interventions applied on this
     /// step. Empty when [`super::intervene_heads::HeadInterventionPlan::none`] was threaded.
     pub head_firings: Vec<super::intervene_heads::HeadFiring>,
+    /// Which declared `ShortConv` channel interventions applied on this step.
+    /// Empty when [`super::intervene_short_conv::ShortConvInterventionPlan::none`] was threaded.
+    pub short_conv_firings: Vec<super::intervene_short_conv::ShortConvFiring>,
 }
 
 /// An address that was declared and never reached by the run.

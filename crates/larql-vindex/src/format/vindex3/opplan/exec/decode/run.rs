@@ -6,8 +6,10 @@ use super::super::backend::{AttentionStepCall, PlanBackend};
 use super::super::hyper_connection::{self, Bundle, Mutation};
 use super::super::intervene::{Firing, InterventionPlan};
 use super::super::intervene_heads::{HeadFiring, HeadInterventionPlan};
+use super::super::intervene_short_conv::{ShortConvFiring, ShortConvInterventionPlan};
 use super::super::observe::{
-    AttnResSiteRecord, CarrierForm, CarrierTransition, HcSite, InputSite, StepEvent, StepObserver,
+    AttnResSiteRecord, CarrierForm, CarrierTransition, HcSite, InputSite, ShortConvRecord,
+    StepEvent, StepObserver,
 };
 use crate::error::VindexError;
 use std::borrow::Cow;
@@ -23,6 +25,7 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
         mutation: Mutation,
         interventions: &InterventionPlan,
         head_interventions: &HeadInterventionPlan,
+        short_conv_interventions: &ShortConvInterventionPlan,
     ) -> Result<StepRun, VindexError> {
         self.usable()?;
         let mut profile = super::super::profile::Token::start(
@@ -35,6 +38,7 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
         let ops = self.ops.get();
         let mut firings: Vec<Firing> = Vec::new();
         let mut head_firings: Vec<HeadFiring> = Vec::new();
+        let mut short_conv_firings: Vec<ShortConvFiring> = Vec::new();
         let hidden = ops.hidden();
         let topology = ops.hyper_connection();
         // The ONE declared fact the attention-residual schedule needs:
@@ -262,10 +266,58 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
                         layer.layer,
                     )?;
                     let recurrent = self.kv.state_mut().recurrent_state(index)?;
-                    let mut planes = super::super::short_conv::layer_forward_with(
-                        &sc.op, &weights, &inputs, recurrent, projector,
-                    );
-                    planes.output.remove(0)
+                    let wants_sc = observer.wants_short_conv_at(index, position);
+                    let has_sc_intv = short_conv_interventions.touches_layer(index);
+                    if wants_sc || has_sc_intv {
+                        let channels = sc.op.hidden_size;
+                        let mut fired_sc: Vec<ShortConvFiring> = Vec::new();
+                        let mut sc_obs = |record: ShortConvRecord<'_>| observer.short_conv(record);
+                        let mut sc_intv = |channel: usize, val: &mut f32| {
+                            if let Some(intervention) =
+                                short_conv_interventions.at(index, channel, position)
+                            {
+                                intervention.apply(val);
+                                fired_sc.push(ShortConvFiring {
+                                    layer: index,
+                                    channel,
+                                    position,
+                                    kind: intervention.kind(),
+                                });
+                            }
+                        };
+                        let obs_cb: Option<super::super::short_conv::ShortConvObserveCb<'_>> =
+                            if wants_sc { Some(&mut sc_obs) } else { None };
+                        let intv_cb: Option<super::super::short_conv::ShortConvInterveneCb<'_>> =
+                            if has_sc_intv {
+                                Some(&mut sc_intv)
+                            } else {
+                                None
+                            };
+                        let out = super::super::short_conv::layer_step_observed_and_intervened(
+                            &sc.op, &weights, &inputs[0], recurrent, projector, index, position,
+                            obs_cb, intv_cb,
+                        );
+                        if wants_sc {
+                            observer.event(StepEvent::ShortConvObserved {
+                                layer: index,
+                                channels,
+                            });
+                        }
+                        for fired in &fired_sc {
+                            observer.event(StepEvent::ShortConvIntervened {
+                                layer: fired.layer,
+                                channel: fired.channel,
+                                kind: fired.kind,
+                            });
+                        }
+                        short_conv_firings.extend(fired_sc);
+                        out
+                    } else {
+                        let mut planes = super::super::short_conv::layer_forward_with(
+                            &sc.op, &weights, &inputs, recurrent, projector,
+                        );
+                        planes.output.remove(0)
+                    }
                 }
                 super::super::prepared::PreparedAttention::Kda(ops) => {
                     let weights = ops.weights()?;
@@ -709,6 +761,7 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
             logits,
             firings,
             head_firings,
+            short_conv_firings,
             #[cfg(test)]
             exit: witness_exit,
             #[cfg(test)]

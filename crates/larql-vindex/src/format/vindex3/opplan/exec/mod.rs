@@ -46,6 +46,7 @@ pub mod hyper_connection;
 pub mod identity;
 pub mod intervene;
 pub mod intervene_heads;
+pub mod intervene_short_conv;
 pub mod kda;
 #[cfg(all(feature = "gpu", target_os = "macos"))]
 pub mod kda_metal;
