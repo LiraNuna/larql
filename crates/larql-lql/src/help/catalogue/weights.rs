@@ -91,20 +91,25 @@ pub(super) static UPDATE_WEIGHTS: StatementHelp = StatementHelp {
 
 pub(super) static REMOVE_DIRECTION: StatementHelp = StatementHelp {
     name: "REMOVE DIRECTION",
-    aliases: &[],
+    aliases: &["REMOVE INPUT DIRECTION"],
     group: HelpGroup::Weights,
     syntax: &[
-        "REMOVE DIRECTION \"<operand.json | vec.npy>\" FROM \"<tensor>\" COLUMNS (<n>, ...) SCALE <number> NUMERICS \"<profile>\";",
+        "REMOVE DIRECTION \"<operand.json | vec.npy>\" FROM \"<tensor>\" {COLUMNS (<n>, <lo>..<hi>, ...) | HEAD <h> | HEADS (...)} SCALE <number> NUMERICS \"<profile>\";",
+        "REMOVE INPUT DIRECTION \"<operand.json | vec.npy>\" FROM \"<tensor>\" {ROWS (<n>, <lo>..<hi>, ...) | HEAD <h> | HEADS (...)} SCALE <number> NUMERICS \"<profile>\";",
     ],
     does: &[
-        "Stages the removal of a direction u from the chosen columns S of one stored BF16 matrix:",
-        "W[:, S] <- W[:, S] - scale * u * (u^T W[:, S]). The op is declared by its operand, columns,",
-        "scale and numerics profile; COMPILE writes the exact BF16 results the profile defines.",
-        "No f32 delta is computed anywhere.",
+        "Stages the removal of a direction from one stored BF16 matrix:",
+        "  REMOVE DIRECTION: output-space projection W[:, S] <- W[:, S] - scale * u * (u^T W[:, S])",
+        "  REMOVE INPUT DIRECTION: row/input-space projection W[R, :] <- W[R, :] - scale * (W[R, :] v) * v^T",
+        "Index lists support half-open ranges (512..640) and inclusive ranges (512..=639).",
+        "HEAD <h> and HEADS (...) auto-expand attention head slices from the model's head_dim and",
+        "num_q_heads / num_kv_heads (o_proj columns for REMOVE DIRECTION; q/k/v_proj rows for REMOVE INPUT DIRECTION).",
+        "COMPILE writes the exact BF16 results the profile defines; no f32 delta is computed anywhere.",
     ],
     examples: &[
         "REMOVE DIRECTION \"u.json\" FROM \"1.mlp.down_proj.weight\" COLUMNS (33, 34) SCALE 0.5 NUMERICS \"f64-seq-rne1/v1\";",
-        "REMOVE DIRECTION \"u.npy\" FROM \"1.self_attn.o_proj.weight\" COLUMNS (40) SCALE -1 NUMERICS \"f64-seq-rne2/v1\";",
+        "REMOVE DIRECTION \"u.npy\" FROM \"1.self_attn.o_proj.weight\" HEAD 4 SCALE 1.0 NUMERICS \"f64-seq-rne2/v1\";",
+        "REMOVE INPUT DIRECTION \"v.npy\" FROM \"22.self_attn.k_proj.weight\" HEADS (0, 2) SCALE 1.0 NUMERICS \"f64-seq-rne1/v1\";",
     ],
     needs: &[
         Need::Vindex3,

@@ -202,9 +202,21 @@ impl Session {
         operands: &str,
         tensor: &str,
         columns: &[usize],
+        heads: Option<&[usize]>,
         numerics: &str,
     ) -> Result<Vec<String>, LqlError> {
         vindex3_path(self)?;
+        let resolved_cols: Vec<usize> = match heads {
+            Some(hs) => {
+                let Backend::Vindex3 { runtime, .. } = &self.backend else {
+                    unreachable!("checked above")
+                };
+                super::weights::resolve_attention_heads(runtime.plan(), tensor, hs, false)
+                    .map_err(refused)?
+            }
+            None => columns.to_vec(),
+        };
+        let columns = &resolved_cols;
         let profile = Profile::parse(Some(numerics)).map_err(refused)?;
         let (rank, a, b, origin) = if Path::new(operands)
             .extension()

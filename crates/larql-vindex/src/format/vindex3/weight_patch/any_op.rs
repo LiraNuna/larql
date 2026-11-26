@@ -96,12 +96,22 @@ impl WeightOpRef<'_> {
         }
     }
 
-    /// The columns a structured op writes down, over every row; `None` for a delta op, which names elements.
+    /// The columns a column-axis structured op writes down, over every row; `None` for delta ops
+    /// and row-axis (`input_axis`) structured ops.
     pub fn structured_columns(&self) -> Option<&[usize]> {
         match self {
             WeightOpRef::Delta(_) => None,
-            WeightOpRef::Structured(op) => Some(&op.columns),
+            WeightOpRef::Structured(op) if !op.input_axis => Some(&op.columns),
+            WeightOpRef::Structured(_) => None,
             WeightOpRef::LowRankColumns(op) => Some(&op.columns),
+        }
+    }
+
+    /// The rows a row-axis (`input_axis`) structured op writes across all columns.
+    pub fn structured_rows(&self) -> Option<&[usize]> {
+        match self {
+            WeightOpRef::Structured(op) if op.input_axis => Some(&op.columns),
+            _ => None,
         }
     }
 
@@ -125,11 +135,25 @@ impl WeightOpRef<'_> {
                     None => Ok(()),
                 }
             }
-            _ => match (self.structured_columns(), held.structured_columns()) {
-                (Some(new), Some(old)) => match new.iter().find(|c| old.contains(c)) {
+            _ => match (
+                self.structured_columns(),
+                held.structured_columns(),
+                self.structured_rows(),
+                held.structured_rows(),
+            ) {
+                (Some(new), Some(old), _, _) => match new.iter().find(|c| old.contains(c)) {
                     Some(&col) => Err(WeightPatchError::ColumnConflict {
                         tensor,
                         col,
+                        by: by.to_string(),
+                    }),
+                    None => Ok(()),
+                },
+                (_, _, Some(new), Some(old)) => match new.iter().find(|r| old.contains(r)) {
+                    Some(&row) => Err(WeightPatchError::Conflict {
+                        tensor,
+                        row,
+                        col: 0,
                         by: by.to_string(),
                     }),
                     None => Ok(()),

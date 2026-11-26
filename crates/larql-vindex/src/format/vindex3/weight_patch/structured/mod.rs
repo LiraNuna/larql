@@ -96,6 +96,13 @@ pub enum OpKind {
         alpha: ScalarBits,
         columns: Vec<usize>,
     },
+    /// Row-space (input-direction) removal:
+    /// `W[R, :] <- W[R, :] - (alpha * (W[R, :] v)) v^T` on rows `R` (`v.len() == cols`).
+    RemoveInputDirection {
+        v: OperandBits,
+        alpha: ScalarBits,
+        rows: Vec<usize>,
+    },
     AddLowRank {
         rank: usize,
         /// `rows × rank`, row-major.

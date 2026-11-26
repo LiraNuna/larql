@@ -38,19 +38,30 @@ const DIGEST_DOMAIN: &str = "structured_op/remove_direction/v1";
 const F32_HEX_DIGITS: usize = 8;
 const F64_HEX_DIGITS: usize = 16;
 
-/// A `remove_direction` op as it appears in a `.vlp` patch.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// A `remove_direction` (or row-space `remove_input_direction`) op as it appears in a `.vlp` patch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructuredWeightOp {
     pub source: SourceBinding,
     pub tensor: String,
     /// The numerical profile id, such as `f64-seq-rne1/v1`.
     pub numerics: String,
-    /// `u`, one fixed-width lowercase hex string per element: the stored bits, never a decimal.
+    /// `u` (output-axis, `len == rows`) or `v` (input-axis, `len == cols`), one fixed-width
+    /// lowercase hex string per element: the stored bits, never a decimal.
     pub operand: Vec<String>,
     /// `alpha`, as stored bits in the profile's working width.
     pub alpha: String,
-    /// Strictly increasing column indices.
+    /// Strictly increasing column indices (when `input_axis == false`) or row indices
+    /// (when `input_axis == true`).
     pub columns: Vec<usize>,
+    /// When `true`, removes input-space direction `v` from rows listed in `columns`:
+    /// `W[R, :] <- W[R, :] - alpha * (W[R, :] v) v^T`. Defaults to `false` so existing v1
+    /// `.vlp` files and digests are bit-for-bit unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub input_axis: bool,
     /// Where the operand came from, if its writer says: a feature artifact id, a file hash, a note. The
     /// operand's bits are what the op computes with; this only makes its provenance separately identifiable
     /// rather than lost inside the op. It is covered by the digest and read by nothing else.
@@ -61,9 +72,7 @@ pub struct StructuredWeightOp {
 }
 
 impl StructuredWeightOp {
-    /// Build an op bound to `container` and seal it. (Named `bind`, not `record`: it makes an instruction,
-    /// it does not record a measurement, and the ingestion-closure guard counts `record` calls.) The operand and alpha are the profile's working width:
-    /// f64 bits for the f64 profiles, f32 bits for the f32 one.
+    /// Build an output-axis `remove_direction` op bound to `container` and seal it.
     pub fn bind(
         container: &Path,
         tensor: &str,
@@ -71,6 +80,31 @@ impl StructuredWeightOp {
         operand: &OperandBits,
         alpha: ScalarBits,
         columns: Vec<usize>,
+    ) -> Result<Self, WeightPatchError> {
+        Self::bind_axis(container, tensor, numerics, operand, alpha, columns, false)
+    }
+
+    /// Build a row-space (`input_axis == true`) `remove_input_direction` op bound to `container`
+    /// and seal it: `W[R, :] <- W[R, :] - alpha * (W[R, :] v) v^T` over `rows`.
+    pub fn bind_input(
+        container: &Path,
+        tensor: &str,
+        numerics: &str,
+        operand: &OperandBits,
+        alpha: ScalarBits,
+        rows: Vec<usize>,
+    ) -> Result<Self, WeightPatchError> {
+        Self::bind_axis(container, tensor, numerics, operand, alpha, rows, true)
+    }
+
+    fn bind_axis(
+        container: &Path,
+        tensor: &str,
+        numerics: &str,
+        operand: &OperandBits,
+        alpha: ScalarBits,
+        indices: Vec<usize>,
+        input_axis: bool,
     ) -> Result<Self, WeightPatchError> {
         let source = bind_source(container, tensor)?;
         let hex = |bits: &OperandBits| -> Vec<String> {
@@ -89,7 +123,8 @@ impl StructuredWeightOp {
             numerics: numerics.to_string(),
             operand: hex(operand),
             alpha,
-            columns,
+            columns: indices,
+            input_axis,
             origin: None,
             digest: String::new(),
         };
@@ -107,9 +142,9 @@ impl StructuredWeightOp {
     /// The digest of this op's fields, independent of the stored `digest`.
     pub fn compute_digest(&self) -> String {
         let columns: Vec<String> = self.columns.iter().map(|c| c.to_string()).collect();
-        let text =
-            format!(
-            "{DIGEST_DOMAIN}\nmodel={}\nindex_sha256={}\nrepresentation={}\npayload_sha256={}\n\
+        let axis_line = if self.input_axis { "axis=input\n" } else { "" };
+        let text = format!(
+            "{DIGEST_DOMAIN}\n{axis_line}model={}\nindex_sha256={}\nrepresentation={}\npayload_sha256={}\n\
              tensor={}\nnumerics={}\nalpha={}\ncolumns={}\noperand={}\norigin={}\n",
             self.source.model,
             self.source.index_sha256,
@@ -120,7 +155,9 @@ impl StructuredWeightOp {
             self.alpha,
             columns.join(","),
             self.operand.join(","),
-            self.origin.as_deref().map_or("-".to_string(), |o| format!("+{o}")),
+            self.origin
+                .as_deref()
+                .map_or("-".to_string(), |o| format!("+{o}")),
         );
         super::apply::hex(&Sha256::digest(text.as_bytes()))
     }
@@ -144,12 +181,20 @@ impl StructuredWeightOp {
 
     /// The op as the interpreter takes it, with its operands decoded.
     pub(super) fn op_kind(&self) -> Result<OpKind, WeightPatchError> {
-        let (u, alpha) = self.operands()?;
-        Ok(OpKind::RemoveDirection {
-            u,
-            alpha,
-            columns: self.columns.clone(),
-        })
+        let (operand, alpha) = self.operands()?;
+        if self.input_axis {
+            Ok(OpKind::RemoveInputDirection {
+                v: operand,
+                alpha,
+                rows: self.columns.clone(),
+            })
+        } else {
+            Ok(OpKind::RemoveDirection {
+                u: operand,
+                alpha,
+                columns: self.columns.clone(),
+            })
+        }
     }
 
     /// The operand and alpha as the interpreter takes them.
@@ -167,16 +212,12 @@ impl StructuredWeightOp {
     pub fn resolve(&self, container: &Path) -> Result<ResultPatch, WeightPatchError> {
         self.check_intact()?;
         self.check_binding(container)?;
-        let (operand, alpha) = self.operands()?;
+        let kind = self.op_kind()?;
         resolve_on_container(
             container,
             &super::qualified(&self.source.representation, &self.tensor),
             &self.numerics,
-            |_| OpKind::RemoveDirection {
-                u: operand,
-                alpha,
-                columns: self.columns.clone(),
-            },
+            |_| kind,
         )
     }
 }

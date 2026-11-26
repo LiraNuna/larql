@@ -17,6 +17,8 @@ pub enum Token {
     LParen,    // (
     RParen,    // )
     Dot,       // .
+    DotDot,    // .. (half-open index range like 512..640)
+    DotDotEq,  // ..= (inclusive index range like 512..=639)
     Pipe,      // |>
     Eq,        // =
     Neq,       // !=
@@ -455,7 +457,17 @@ impl<'a> Lexer<'a> {
             }
             '.' => {
                 self.pos += 1;
-                Ok(Token::Dot)
+                if self.pos < self.input.len() && self.input[self.pos] == b'.' {
+                    self.pos += 1;
+                    if self.pos < self.input.len() && self.input[self.pos] == b'=' {
+                        self.pos += 1;
+                        Ok(Token::DotDotEq)
+                    } else {
+                        Ok(Token::DotDot)
+                    }
+                } else {
+                    Ok(Token::Dot)
+                }
             }
             '|' => {
                 self.pos += 1;

@@ -94,6 +94,43 @@ fn interpret(
                 )
             }
         }
+        (
+            OpKind::RemoveInputDirection {
+                v,
+                alpha,
+                rows: selected_rows,
+            },
+            Some(p),
+        ) => {
+            check_columns_sorted(selected_rows)?;
+            if v.len() != cols {
+                return Err(refuse(
+                    RefusalCode::ShapeInvalid,
+                    format!("v has {} values for {cols} columns", v.len()),
+                ));
+            }
+            if p.works_in_f64() {
+                remove_input_direction::<f64>(
+                    op,
+                    base,
+                    p,
+                    ar,
+                    decode(v, p)?,
+                    decode_scalar(*alpha, p)?,
+                    selected_rows,
+                )
+            } else {
+                remove_input_direction::<f32>(
+                    op,
+                    base,
+                    p,
+                    ar,
+                    decode(v, p)?,
+                    decode_scalar(*alpha, p)?,
+                    selected_rows,
+                )
+            }
+        }
         (OpKind::AddLowRank { rank, a, b }, Some(p)) => {
             let k = *rank;
             if k < 1 {
@@ -430,6 +467,54 @@ fn remove_direction<W: Work>(
                 ar.mul(ar.mul(alpha, u[r])?, c)?
             };
             out[r * cols + j] = ar.to_bf16(ar.sub(w[r], t)?, chain)?;
+        }
+    }
+    apply_fixups(&mut out, &op.fixups, cols)?;
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remove_input_direction<W: Work>(
+    op: &StructuredOp,
+    base: &BaseTensor<'_>,
+    p: Profile,
+    ar: Arith,
+    v: Vec<W>,
+    alpha: W,
+    selected_rows: &[usize],
+) -> Result<Vec<u16>, Refusal> {
+    let rows = op.shape[0];
+    if let Some(&last) = selected_rows.last() {
+        if last >= rows {
+            return Err(refuse(
+                RefusalCode::ColumnsInvalid,
+                format!("row {last} of a {rows}-row tensor"),
+            ));
+        }
+    }
+    let cols = check_header(op, base, None, |r, _| {
+        selected_rows.binary_search(&r).is_ok()
+    })?;
+    check_read_finite(
+        base,
+        selected_rows
+            .iter()
+            .flat_map(|&r| (0..cols).map(move |j| r * cols + j)),
+    )?;
+    let chain = through_f32(p, ar.mutation);
+    let mut out = base.bits.to_vec();
+    for &r in selected_rows {
+        let w: Vec<W> = (0..cols)
+            .map(|j| W::widen_bf16(base.bits[r * cols + j]))
+            .collect();
+        let c = reduce(ar, &v, &w)?;
+        for j in 0..cols {
+            let t = if ar.mutation == Mutation::AlphaTimesUc {
+                ar.mul(alpha, ar.mul(v[j], c)?)?
+            } else {
+                ar.mul(ar.mul(alpha, v[j])?, c)?
+            };
+            out[r * cols + j] = ar.to_bf16(ar.sub(w[j], t)?, chain)?;
         }
     }
     apply_fixups(&mut out, &op.fixups, cols)?;

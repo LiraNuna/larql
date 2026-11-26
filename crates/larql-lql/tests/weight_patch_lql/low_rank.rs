@@ -86,6 +86,7 @@ fn the_statement_parses_into_its_operand_file_tensor_columns_and_profile() {
         operands,
         tensor,
         columns,
+        heads: None,
         numerics,
     } = parsed
     else {

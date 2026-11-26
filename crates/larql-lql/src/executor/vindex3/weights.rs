@@ -364,19 +364,30 @@ impl Session {
         Ok(out)
     }
 
-    /// `REMOVE DIRECTION`: stage a structured `remove_direction` on the bound container. Everything
-    /// checkable is checked before anything is staged: the operand file, the profile, the tensor, the
-    /// columns, and that the op, resolved by the frozen interpreter, edits at least one element.
+    /// `REMOVE [INPUT] DIRECTION`: stage a structured direction-removal op on the bound container.
+    /// When `input_axis` is `false`, removes output direction `u` from `columns` (`W[:, S] <- W[:, S] - scale * u (u^T W[:, S])`).
+    /// When `input_axis` is `true`, removes input direction `v` from rows (`W[R, :] <- W[R, :] - scale * (W[R, :] v) v^T`).
+    /// When `heads` is `Some`, indices are expanded from the bound container's attention head geometry.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn exec_remove_direction(
         &mut self,
         operand: &str,
         tensor: &str,
         columns: &[usize],
+        heads: Option<&[usize]>,
+        input_axis: bool,
         scale: f64,
         numerics: &str,
     ) -> Result<Vec<String>, LqlError> {
-        let path = match &self.backend {
-            Backend::Vindex3 { path, .. } => path.clone(),
+        let (path, indices) = match &self.backend {
+            Backend::Vindex3 { path, runtime, .. } => {
+                let resolved = match heads {
+                    Some(hs) => resolve_attention_heads(runtime.plan(), tensor, hs, input_axis)
+                        .map_err(refused_direction)?,
+                    None => columns.to_vec(),
+                };
+                (path.clone(), resolved)
+            }
             Backend::Vindex { .. } => {
                 return Err(LqlError::Execution(
                     "REMOVE DIRECTION edits the stored weights of a VINDEX3 container; \
@@ -446,15 +457,27 @@ impl Session {
             (bits, file.origin)
         };
         let n_components = bits.len();
-        let mut op = StructuredWeightOp::bind(
-            &path,
-            tensor,
-            numerics,
-            &OperandBits::F64(bits),
-            ScalarBits::F64(scale.to_bits()),
-            columns.to_vec(),
-        )
-        .map_err(refused_direction)?;
+        let mut op = if input_axis {
+            StructuredWeightOp::bind_input(
+                &path,
+                tensor,
+                numerics,
+                &OperandBits::F64(bits),
+                ScalarBits::F64(scale.to_bits()),
+                indices.clone(),
+            )
+            .map_err(refused_direction)?
+        } else {
+            StructuredWeightOp::bind(
+                &path,
+                tensor,
+                numerics,
+                &OperandBits::F64(bits),
+                ScalarBits::F64(scale.to_bits()),
+                indices.clone(),
+            )
+            .map_err(refused_direction)?
+        };
         if let Some(origin) = origin {
             op = op.with_origin(origin);
         }
@@ -477,8 +500,24 @@ impl Session {
                 .operations
                 .push(larql_vindex::PatchOp::StructuredWeight(op));
         }
+        let kind_label = if input_axis {
+            "remove input direction"
+        } else {
+            "remove direction"
+        };
+        let axis_label = if input_axis { "row(s)" } else { "column(s)" };
+        let summary_indices = if indices.len() <= 16 {
+            format!("{indices:?}")
+        } else {
+            format!(
+                "{} ({}..={})",
+                indices.len(),
+                indices.first().copied().unwrap_or_default(),
+                indices.last().copied().unwrap_or_default()
+            )
+        };
         let mut out = vec![format!(
-            "Staged: remove direction ({n_components} component(s)) from {tensor}, column(s) {columns:?}, scale {scale} under {numerics}; \
+            "Staged: {kind_label} ({n_components} component(s)) from {tensor}, {axis_label} {summary_indices}, scale {scale} under {numerics}; \
              {} element(s) would change",
             resolved.edits.len()
         )];
@@ -491,4 +530,70 @@ impl Session {
         out.extend(self.refresh_live_weights());
         Ok(out)
     }
+}
+
+/// Expand `HEAD <h>` / `HEADS (...)` against the bound container's `ComponentOpPlan` into
+/// strictly increasing row indices (`input_axis == true`, for `q_proj`/`k_proj`/`v_proj`)
+/// or column indices (`input_axis == false`, for `o_proj`). Fails closed on non-attention
+/// tensors, fused query/gate projections, duplicate heads, or out-of-range head indices.
+pub(super) fn resolve_attention_heads(
+    plan: &larql_vindex::format::vindex3::opplan::ComponentOpPlan,
+    tensor: &str,
+    heads: &[usize],
+    input_axis: bool,
+) -> Result<Vec<usize>, String> {
+    if heads.is_empty() {
+        return Err("HEADS list must not be empty".into());
+    }
+    let bare = wp::TensorName::parse(tensor).tensor;
+    let mut matched: Option<(usize, usize, &'static str)> = None;
+    for layer in &plan.layers {
+        let Some(attn) = layer.attention.softmax() else {
+            continue;
+        };
+        if !input_axis {
+            if attn.o.tensor == bare {
+                matched = Some((attn.num_q_heads, attn.head_dim, "query"));
+                break;
+            }
+        } else if attn.q.tensor == bare {
+            if attn.output_gate.as_ref().is_some_and(|g| {
+                g.spec.source == larql_models::config::GateSource::FusedQueryProjection
+            }) {
+                return Err(format!(
+                    "tensor `{tensor}` fuses query and gate rows interleaved per head; pass explicit ROWS (...) instead of HEAD/HEADS"
+                ));
+            }
+            matched = Some((attn.num_q_heads, attn.head_dim, "query"));
+            break;
+        } else if attn.k.tensor == bare || attn.v.tensor == bare {
+            matched = Some((attn.num_kv_heads, attn.head_dim, "KV"));
+            break;
+        }
+    }
+    let Some((num_heads, head_dim, role)) = matched else {
+        let expected = if input_axis {
+            "softmax q_proj, k_proj, or v_proj"
+        } else {
+            "softmax o_proj"
+        };
+        return Err(format!(
+            "HEAD/HEADS target requires a {expected} tensor; `{tensor}` does not match any such projection in this model"
+        ));
+    };
+    let mut sorted = heads.to_vec();
+    sorted.sort_unstable();
+    if let Some(w) = sorted.windows(2).find(|w| w[0] == w[1]) {
+        return Err(format!("head {} is listed more than once", w[0]));
+    }
+    if let Some(&bad) = sorted.iter().find(|&&h| h >= num_heads) {
+        return Err(format!(
+            "head {bad} is outside `{tensor}`'s {num_heads} {role} heads (0..{num_heads})"
+        ));
+    }
+    let mut indices = Vec::with_capacity(sorted.len() * head_dim);
+    for h in sorted {
+        indices.extend(h * head_dim..(h + 1) * head_dim);
+    }
+    Ok(indices)
 }

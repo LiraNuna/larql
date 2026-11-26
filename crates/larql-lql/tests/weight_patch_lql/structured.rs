@@ -359,12 +359,16 @@ fn the_statement_parses_with_a_signed_scale_and_a_column_list() {
     match &parsed {
         larql_lql::Statement::RemoveDirection {
             columns,
+            heads,
+            input_axis,
             scale,
             numerics,
             tensor,
             operand,
         } => {
             assert_eq!(columns, &[1usize, 4, 9]);
+            assert_eq!(*heads, None);
+            assert!(!*input_axis);
             assert_eq!(*scale, -0.5);
             assert_eq!(numerics, PROFILE);
             assert_eq!(tensor, TENSOR);

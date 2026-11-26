@@ -135,6 +135,16 @@ impl StructuredOpRecord {
                     },
                 ),
             ],
+            OpKind::RemoveInputDirection { v, alpha, .. } => vec![
+                ("v", v),
+                (
+                    "alpha",
+                    match alpha {
+                        ScalarBits::F64(b) => OperandBits::F64(vec![b]),
+                        ScalarBits::F32(b) => OperandBits::F32(vec![b]),
+                    },
+                ),
+            ],
             OpKind::AddLowRankColumns { a, b, .. } => vec![("a", a), ("b", b)],
             OpKind::AddLowRank { .. } | OpKind::ZeroColumns { .. } => {
                 unreachable!("no .vlp op declares this kind")

@@ -139,14 +139,18 @@ pub enum Statement {
         delta: f32,
         set_value: bool,
     },
-    /// `REMOVE DIRECTION "<operand file>" FROM "<tensor>" COLUMNS (<n>, …) SCALE <f> NUMERICS "<profile>"`:
-    /// stage a structured `remove_direction` on a VINDEX3 container's stored weights, declared by its
-    /// operand, columns, scale and numerical profile. Nothing is converted to a delta: the compile writes
-    /// the exact BF16 results the profile defines. See `weight_patch::structured_op`.
+    /// `REMOVE [INPUT] DIRECTION "<operand file>" FROM "<tensor>" {COLUMNS (...) | ROWS (...) | HEAD <n> | HEADS (...)} SCALE <f> NUMERICS "<profile>"`:
+    /// stage a structured direction-removal op on a VINDEX3 container's stored weights.
+    /// When `input_axis` is `false` (`REMOVE DIRECTION`), removes output direction `u` from `columns`.
+    /// When `input_axis` is `true` (`REMOVE INPUT DIRECTION`), removes input direction `v` from rows
+    /// (`W[R, :] <- W[R, :] - scale * (W[R, :] v) v^T`). When `heads` is `Some`, indices are expanded
+    /// from the bound container's attention head geometry (`head_dim`, `num_q_heads` / `num_kv_heads`).
     RemoveDirection {
         operand: String,
         tensor: String,
         columns: Vec<usize>,
+        heads: Option<Vec<usize>>,
+        input_axis: bool,
         scale: f64,
         numerics: String,
     },
@@ -266,14 +270,13 @@ pub enum Statement {
         witness: String,
         container: String,
     },
-    /// `ADD LOW RANK "<operand file>" TO "<tensor>" COLUMNS (<n>, …) NUMERICS "<profile>"`: stage a structured
-    /// `add_low_rank_columns` (VLP numerics v2) on a VINDEX3 container's stored weights, declared by its
-    /// operands `a` and `b` (in the file), its columns and its numerical profile. The compile writes the exact
-    /// BF16 results the profile defines. See `weight_patch::low_rank_op`.
+    /// `ADD LOW RANK "<operand file>" TO "<tensor>" {COLUMNS (...) | HEAD <n> | HEADS (...)} NUMERICS "<profile>"`:
+    /// stage a structured `add_low_rank_columns` (VLP numerics v2) on a VINDEX3 container's stored weights.
     AddLowRank {
         operands: String,
         tensor: String,
         columns: Vec<usize>,
+        heads: Option<Vec<usize>>,
         numerics: String,
     },
     /// `VERIFY PATCH "<patch.vlp>" USING CONTRACT "<id>" FROM "<base>" AGAINST "<container>";`:
