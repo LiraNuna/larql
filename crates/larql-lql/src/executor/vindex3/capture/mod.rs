@@ -273,11 +273,13 @@ impl Session {
             spec.continuation,
         )?;
         let positions = sequence::positions(spec.positions, &sequence)?;
-        let (ops, overrides) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let (ops, overrides, cache_key) =
+            prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let continuation = v3_continuation(runtime)?;
         let blocks = batch::capture(
             runtime,
             &ops,
+            cache_key.as_ref().map(|k| (prepared_cache.prefix(), k)),
             &continuation,
             &sequence.ids,
             site,
@@ -484,11 +486,13 @@ impl Session {
             request.continuation,
         )?;
         let positions = sequence::positions(request.positions, &sequence)?;
-        let (ops, overrides) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let (ops, overrides, cache_key) =
+            prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let continuation = v3_continuation(runtime)?;
         let mut all_blocks = batch::capture_many(
             runtime,
             &ops,
+            cache_key.as_ref().map(|k| (prepared_cache.prefix(), k)),
             &continuation,
             &sequence.ids,
             request.sites,

@@ -16,7 +16,7 @@ use larql_vindex::tokenizers::Tokenizer;
 /// Cache key uniquely identifying the resident `PreparedOperands` for a VINDEX3 session:
 /// every live patched tensor's `(name, sha256)` in order (empty for unpatched base weights).
 #[derive(Clone, PartialEq, Eq)]
-struct PreparedCacheKey {
+pub(crate) struct PreparedCacheKey {
     patched_tensors: Vec<(String, String)>,
 }
 
@@ -25,11 +25,12 @@ pub(crate) struct CachedPrepared {
     operands: Arc<PreparedOperands>,
 }
 
-/// Session-resident cache of lowered `PreparedOperands`, shared across `INFER`, `GENERATE`,
-/// `CAPTURE`, and `DLA` so weights are loaded and Q8-quantised once per patch state.
+/// Session-resident cache of lowered `PreparedOperands` and shared-prefix continuation
+/// snapshots, shared across `INFER`, `GENERATE`, `CAPTURE`, and `DLA`.
 #[derive(Default)]
 pub(crate) struct PreparedCache {
     slot: Mutex<Option<CachedPrepared>>,
+    prefix: super::prefix_cache::PrefixStateCache,
 }
 
 impl PreparedCache {
@@ -37,24 +38,29 @@ impl PreparedCache {
         if let Ok(mut guard) = self.slot.lock() {
             *guard = None;
         }
+        self.prefix.clear();
+    }
+
+    pub(crate) fn prefix(&self) -> &super::prefix_cache::PrefixStateCache {
+        &self.prefix
     }
 }
+
+pub(crate) type SessionPrepared = (
+    Arc<PreparedOperands>,
+    Option<larql_inference::vindex3::OperandOverrides>,
+    Option<PreparedCacheKey>,
+);
 
 /// Resolve and return resident [`PreparedOperands`] for the session's current weight state,
 /// reusing the cached image when the live patched-tensor digests match and rebuilding (and
 /// verifying every patched tensor was read through the operand seam) on a cache miss.
-/// Compose vector edits bypass the cache so every vector mutation executes fresh.
+/// Compose vector edits bypass both the operand and prefix caches (`cache_key == None`).
 pub(crate) fn prepared_operands_for_session(
     runtime: &V3Runtime,
     overlay: &KnowledgeOverlay,
     cache: &PreparedCache,
-) -> Result<
-    (
-        Arc<PreparedOperands>,
-        Option<larql_inference::vindex3::OperandOverrides>,
-    ),
-    LqlError,
-> {
+) -> Result<SessionPrepared, LqlError> {
     let overrides = execution_overrides(runtime, overlay)?;
     if overlay.has_vector_state() {
         let source = match &overrides {
@@ -69,7 +75,7 @@ pub(crate) fn prepared_operands_for_session(
         )
         .map_err(|e| LqlError::exec("prepare operands failed", e))?;
         confirm_patched_weights_ran(overrides.as_ref())?;
-        return Ok((Arc::new(ops), overrides));
+        return Ok((Arc::new(ops), overrides, None));
     }
 
     let patched_tensors = match overlay.live_weights() {
@@ -91,11 +97,12 @@ pub(crate) fn prepared_operands_for_session(
     {
         let mut guard = cache.slot.lock().unwrap();
         if let Some(entry) = guard.as_ref().filter(|e| e.key == key) {
-            return Ok((Arc::clone(&entry.operands), overrides));
+            return Ok((Arc::clone(&entry.operands), overrides, Some(key)));
         }
-        // Release the previous resident image before allocating the replacement so peak RAM
-        // stays bounded to one prepared image during patch sweeps.
+        // Release the previous resident image and prefix snapshots before allocating the
+        // replacement so peak RAM stays bounded to one prepared image during patch sweeps.
         *guard = None;
+        cache.prefix.clear();
     }
 
     let source = match &overrides {
@@ -113,10 +120,10 @@ pub(crate) fn prepared_operands_for_session(
     );
     confirm_patched_weights_ran(overrides.as_ref())?;
     *cache.slot.lock().unwrap() = Some(CachedPrepared {
-        key,
+        key: key.clone(),
         operands: Arc::clone(&ops),
     });
-    Ok((ops, overrides))
+    Ok((ops, overrides, Some(key)))
 }
 
 /// The one raw-prompt encoder every V3 surface calls — the BOS rule

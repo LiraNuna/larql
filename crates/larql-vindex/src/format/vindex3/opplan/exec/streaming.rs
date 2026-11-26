@@ -253,11 +253,37 @@ pub fn prefill_prepared_observed<B: PlanBackend + ?Sized>(
     kv: &mut dyn KvState,
     sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
 ) -> Result<FinalOutput, VindexError> {
+    prefill_prepared_observed_with_taps(plan, ops, tokens, backend, kv, sink, None)
+}
+
+/// [`prefill_prepared_observed`], additionally collecting batch-prefill taps
+/// (`ffn.down_input`, `ffn.down_output`, `short_conv.*`, and when `kv.position() == 0`,
+/// `attn.head_out` and `attn.weights`) on `tokens`.
+#[allow(clippy::too_many_arguments)]
+pub fn prefill_prepared_observed_with_taps<B: PlanBackend + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
+    tokens: &[u32],
+    backend: &B,
+    kv: &mut dyn KvState,
+    sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
+    taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
+) -> Result<FinalOutput, VindexError> {
     ops.ensure_stack_ready()?;
     if matches!(ops.slice(), prepared::ExecutionSlice::Endpoints) {
         return Err(VindexError::Parse(
             "endpoints-only operands require a distributed coordinator".into(),
         ));
+    }
+    if kv.position() > 0 {
+        if let Some((req, _)) = &taps {
+            if !req.attn_head_out.is_empty() || !req.attn_weights.is_empty() {
+                return Err(VindexError::Parse(
+                    "attn.head_out and attn.weights taps require a fresh (position 0) traversal"
+                        .into(),
+                ));
+            }
+        }
     }
     // The FULL geometry, KV and recurrent alike. `plan_kv_geometry` is
     // the KV-only adapter and refuses a hybrid plan outright, which was
@@ -266,7 +292,7 @@ pub fn prefill_prepared_observed<B: PlanBackend + ?Sized>(
         &continuation::plan_continuation_geometry(plan).map_err(VindexError::Parse)?,
     )?;
     let base = kv.position();
-    let out = traverse(
+    let out = traverse_with_taps(
         plan,
         ops,
         tokens,
@@ -275,6 +301,7 @@ pub fn prefill_prepared_observed<B: PlanBackend + ?Sized>(
         sink,
         Some(&mut *kv),
         Mutation::None,
+        taps,
     )?;
     kv.set_position(base + tokens.len());
     Ok(out)

@@ -11,11 +11,15 @@ use std::collections::BTreeMap;
 use larql_inference::vindex3::{PlaneEvent, SelectedContinuation};
 use larql_vindex::format::vindex3::opplan::exec::prepared::PreparedOperands;
 use larql_vindex::format::vindex3::opplan::exec::{
-    execute_prepared_position_exits_with_taps, requires_continuation, BatchTapRequest, Plane,
+    execute_prepared_position_exits_with_taps, execute_prepared_prefill_position_exits_with_taps,
+    requires_continuation, BatchTapRequest, Plane,
 };
 use larql_vindex::VindexError;
 
-use super::super::V3Runtime;
+use super::super::{
+    prefix_cache::{self, PrefixStateCache},
+    PreparedCacheKey, V3Runtime,
+};
 use super::Rows;
 use crate::ast::CaptureSite;
 use crate::error::LqlError;
@@ -25,25 +29,38 @@ const NO_HEAD: &str = "the component carries no output head";
 
 /// One traversal of `ids`, keeping `site` at `layers` (or at the exit) and `positions`. One block of rows per
 /// layer, in the order given; one block for a site after the last layer.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     runtime: &V3Runtime,
     ops: &PreparedOperands,
+    prefix: Option<(&PrefixStateCache, &PreparedCacheKey)>,
     continuation: &SelectedContinuation,
     ids: &[u32],
     site: CaptureSite,
     layers: &[usize],
     positions: &[usize],
 ) -> Result<Vec<Rows>, LqlError> {
-    let mut results = capture_many(runtime, ops, continuation, ids, &[site], layers, positions)?;
+    let mut results = capture_many(
+        runtime,
+        ops,
+        prefix,
+        continuation,
+        ids,
+        &[site],
+        layers,
+        positions,
+    )?;
     Ok(results.remove(&site).unwrap_or_default())
 }
 
 /// One traversal of `ids` collecting every site in `sites` simultaneously.
 /// Per-layer sites are captured at `layers`; exit sites (`final`, `logits`)
 /// are captured at `positions` after the last layer.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn capture_many(
     runtime: &V3Runtime,
     ops: &PreparedOperands,
+    prefix: Option<(&PrefixStateCache, &PreparedCacheKey)>,
     continuation: &SelectedContinuation,
     ids: &[u32],
     sites: &[CaptureSite],
@@ -72,6 +89,21 @@ pub(super) fn capture_many(
         }
     }
 
+    let can_prefix_cache = prefix.is_some()
+        && !positions.is_empty()
+        && taps.attn_head_out.is_empty()
+        && taps.attn_weights.is_empty()
+        && prefix_cache::plan_supports_prefix_cache(runtime);
+    let min_pos = positions.iter().copied().min().unwrap_or(0);
+    let (mut cached_kv, prefix_len) = if can_prefix_cache {
+        let (cache, key) = prefix.unwrap();
+        let (kv, p) = prefix_cache::acquire_prefix_state(runtime, ops, cache, key, ids, min_pos)?;
+        (Some(kv), p)
+    } else {
+        (None, 0)
+    };
+    let local_positions: Vec<usize> = positions.iter().map(|&p| p - prefix_len).collect();
+
     let mut kept_residual: BTreeMap<usize, Rows> = BTreeMap::new();
     let mut kept_post_attn: BTreeMap<usize, Rows> = BTreeMap::new();
     let mut kept_ffn_in: BTreeMap<usize, Rows> = BTreeMap::new();
@@ -80,43 +112,73 @@ pub(super) fn capture_many(
             if layers.contains(&index) {
                 if want_residual {
                     let rows = plane_rows(&trace.post_layer, index)?;
-                    kept_residual
-                        .insert(index, positions.iter().map(|&p| rows[p].clone()).collect());
+                    kept_residual.insert(
+                        index,
+                        local_positions.iter().map(|&p| rows[p].clone()).collect(),
+                    );
                 }
                 if want_post_attn {
                     let rows = plane_rows(&trace.post_attention, index)?;
-                    kept_post_attn
-                        .insert(index, positions.iter().map(|&p| rows[p].clone()).collect());
+                    kept_post_attn.insert(
+                        index,
+                        local_positions.iter().map(|&p| rows[p].clone()).collect(),
+                    );
                 }
                 if want_ffn_in {
                     let rows = &trace.ffn_input[..];
-                    kept_ffn_in.insert(index, positions.iter().map(|&p| rows[p].clone()).collect());
+                    kept_ffn_in.insert(
+                        index,
+                        local_positions.iter().map(|&p| rows[p].clone()).collect(),
+                    );
                 }
             }
         }
         Ok(())
     };
-    let exit_positions = if want_exit { positions } else { &[][..] };
+    let exit_positions: &[usize] = if want_exit { &local_positions } else { &[] };
     let plan = runtime.plan();
-    // A stack that keeps state beyond softmax attention runs over a fresh provider, as INFER's pass does.
-    let state = requires_continuation(plan).then(|| continuation.build());
-    let (observed, tap_out) = execute_prepared_position_exits_with_taps(
-        plan,
-        ops,
-        ids,
-        runtime.backend(),
-        state,
-        exit_positions,
-        &taps,
-        &mut sink,
-    )
-    .map_err(|e| LqlError::exec("capture pass failed", e))?;
+    let (observed, tap_out) = if let Some(ref mut kv) = cached_kv {
+        let (obs, to) = execute_prepared_prefill_position_exits_with_taps(
+            plan,
+            ops,
+            &ids[prefix_len..],
+            runtime.backend(),
+            kv,
+            exit_positions,
+            &taps,
+            &mut sink,
+        )
+        .map_err(|e| LqlError::exec("capture pass failed", e))?;
+        if let Some((cache, key)) = prefix {
+            cache.record_snapshot(
+                key,
+                ids.to_vec(),
+                cached_kv.take().unwrap(),
+                obs.output.logits.clone(),
+            );
+        }
+        (obs, to)
+    } else {
+        // A stack that keeps state beyond softmax attention runs over a fresh provider, as INFER's pass does.
+        let state = requires_continuation(plan).then(|| continuation.build());
+        execute_prepared_position_exits_with_taps(
+            plan,
+            ops,
+            ids,
+            runtime.backend(),
+            state,
+            exit_positions,
+            &taps,
+            &mut sink,
+        )
+        .map_err(|e| LqlError::exec("capture pass failed", e))?
+    };
     if observed.output.logits.is_none() {
         return Err(LqlError::Execution(NO_HEAD.into()));
     }
 
     let pick_positions =
-        |rows: &[Vec<f32>]| -> Rows { positions.iter().map(|&p| rows[p].clone()).collect() };
+        |rows: &[Vec<f32>]| -> Rows { local_positions.iter().map(|&p| rows[p].clone()).collect() };
     let mut out = BTreeMap::new();
     for &site in sites {
         let blocks = match site {

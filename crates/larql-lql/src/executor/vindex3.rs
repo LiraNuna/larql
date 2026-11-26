@@ -29,6 +29,7 @@ mod low_rank;
 mod npy;
 mod npy_output;
 mod overrides;
+mod prefix_cache;
 mod session;
 mod tensors;
 mod weights;
@@ -207,7 +208,8 @@ impl Session {
     /// session's KNN store answers.
     pub fn predict(&self, prompt: &str, top_k: usize) -> Result<Predictions, LqlError> {
         use larql_vindex::format::vindex3::opplan::exec::{
-            execute_prepared_streaming, execute_prepared_streaming_in, requires_continuation,
+            execute_prepared_streaming, execute_prepared_streaming_in, prefill_prepared_observed,
+            requires_continuation,
         };
 
         let (runtime, tokenizer, overlay, bos_token, prepared_cache) =
@@ -232,9 +234,36 @@ impl Session {
             }
             Ok(())
         };
-        let (ops, _) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let (ops, _, cache_key) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let plan = runtime.plan();
-        let output = if requires_continuation(plan) {
+        let output = if let Some(ref key) = cache_key
+            .filter(|_| !prompt_ids.is_empty() && prefix_cache::plan_supports_prefix_cache(runtime))
+        {
+            let (mut kv, prefix_len) = prefix_cache::acquire_prefix_state(
+                runtime,
+                &ops,
+                prepared_cache.prefix(),
+                key,
+                &prompt_ids,
+                prompt_ids.len().saturating_sub(1),
+            )?;
+            let out = prefill_prepared_observed(
+                plan,
+                &ops,
+                &prompt_ids[prefix_len..],
+                runtime.backend(),
+                &mut kv,
+                &mut sink,
+            )
+            .map_err(|e| LqlError::exec("v3 prefill failed", e))?;
+            prepared_cache.prefix().record_snapshot(
+                key,
+                prompt_ids.clone(),
+                kv,
+                out.logits.clone(),
+            );
+            out
+        } else if requires_continuation(plan) {
             let continuation = v3_continuation(runtime)?;
             execute_prepared_streaming_in(
                 plan,

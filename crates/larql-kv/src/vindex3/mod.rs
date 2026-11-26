@@ -73,6 +73,7 @@ pub const IDENTITY_REVISION: u32 = 1;
 /// machinery (engines, surgery, injection), and
 /// [`from_cache`](Self::from_cache) brings it back — the same
 /// conversation state crossing the `larql-kv` boundary intact.
+#[derive(Clone)]
 pub struct CanonicalKvState {
     cache: KvCache,
     /// Why this state can no longer be continued, once a failed advance could not be put back.

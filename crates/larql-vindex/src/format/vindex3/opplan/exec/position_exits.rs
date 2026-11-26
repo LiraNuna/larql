@@ -188,6 +188,65 @@ pub fn execute_prepared_position_exits_with_taps<B: PlanBackend + ?Sized>(
     Ok((ObservedPrefill { output, exits }, tap_output))
 }
 
+/// [`execute_prepared_position_exits_with_taps`], resuming from a caller-owned
+/// continuation state `kv` (which may already hold a cached prefix at `kv.position() >= 0`),
+/// advancing `kv` through `tokens`, and computing exits at `local_positions` (indices into
+/// `tokens`). Fails closed on the last position's exit parity just like the fresh path.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_prepared_prefill_position_exits_with_taps<B: PlanBackend + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
+    tokens: &[u32],
+    backend: &B,
+    kv: &mut dyn KvState,
+    local_positions: &[usize],
+    taps: &BatchTapRequest,
+    sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
+) -> Result<(ObservedPrefill, BatchTapOutput), VindexError> {
+    validate_position_exits_request(plan, tokens, backend, local_positions, taps)?;
+    let keep_exit_plane = !local_positions.is_empty();
+    let mut exit_plane: Option<Plane> = None;
+    let mut forward = |event: PlaneEvent| {
+        if keep_exit_plane {
+            if let PlaneEvent::Layer { trace, .. } = &event {
+                exit_plane = Some(trace.post_layer.clone());
+            }
+        }
+        sink(event)
+    };
+    let mut tap_output = BatchTapOutput::default();
+    let tap_arg = (!taps.is_empty()).then_some((taps, &mut tap_output));
+    let output = super::streaming::prefill_prepared_observed_with_taps(
+        plan,
+        ops,
+        tokens,
+        backend,
+        kv,
+        &mut forward,
+        tap_arg,
+    )?;
+    if !keep_exit_plane {
+        return Ok((
+            ObservedPrefill {
+                output,
+                exits: Vec::new(),
+            },
+            tap_output,
+        ));
+    }
+    let rows = exit_rows(exit_plane)?;
+    let mut exits = Vec::with_capacity(local_positions.len());
+    for &p in local_positions {
+        let (hidden, logits) = row_exit(ops, backend, &rows[p])?;
+        if p + 1 == tokens.len() {
+            same_as_exit(&logits, output.logits.as_deref())?;
+            same_hidden(&hidden, &output.exit)?;
+        }
+        exits.push(PositionExit { hidden, logits });
+    }
+    Ok((ObservedPrefill { output, exits }, tap_output))
+}
+
 fn validate_position_exits_request<B: PlanBackend + ?Sized>(
     plan: &ComponentOpPlan,
     tokens: &[u32],

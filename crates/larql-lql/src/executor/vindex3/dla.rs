@@ -11,7 +11,8 @@ use std::collections::BTreeSet;
 use larql_inference::vindex3::PlaneEvent;
 use larql_vindex::format::vindex3::opplan::exec::operands::OperandSource;
 use larql_vindex::format::vindex3::opplan::exec::{
-    execute_prepared_position_exits_with_taps, requires_continuation, BatchTapRequest,
+    execute_prepared_position_exits_with_taps, execute_prepared_prefill_position_exits_with_taps,
+    requires_continuation, BatchTapRequest,
 };
 use larql_vindex::format::vindex3::opplan::LayerFfn;
 
@@ -19,7 +20,7 @@ use super::dla_math::{
     dot_diff_f64, dot_f64, linearize_norm, load_two_rows, mixer_label, plane_rows,
     resolve_dla_layers, resolve_dla_target,
 };
-use super::{encode_raw_prompt, prepared_operands_for_session, v3_continuation};
+use super::{encode_raw_prompt, prefix_cache, prepared_operands_for_session, v3_continuation};
 use crate::ast::{CaptureLayers, DlaTarget};
 use crate::error::LqlError;
 use crate::executor::Session;
@@ -132,7 +133,8 @@ impl Session {
         let (token_id_b, label_b) = resolve_dla_target(tokenizer, &target_b, "VS", vocab_size)?;
 
         let start = std::time::Instant::now();
-        let (ops, overrides) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let (ops, overrides, cache_key) =
+            prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let executes_patched = overrides.is_some();
         let source = match &overrides {
             Some(ov) => OperandSource::overlaid(runtime.store(), ov),
@@ -175,32 +177,65 @@ impl Session {
             match event {
                 PlaneEvent::Embedded(plane) => {
                     let rows = plane_rows(plane, "embedding")?;
-                    h_emb = Some(rows[last].clone());
+                    h_emb = rows.last().cloned();
                 }
                 PlaneEvent::Layer { index, trace } => {
                     let pa = plane_rows(&trace.post_attention, "post_attention")?;
                     let pl = plane_rows(&trace.post_layer, "post_layer")?;
-                    post_attn[index] = Some(pa[last].clone());
-                    post_layer[index] = Some(pl[last].clone());
+                    post_attn[index] = pa.last().cloned();
+                    post_layer[index] = pl.last().cloned();
                 }
                 _ => {}
             }
             Ok(())
         };
 
-        let continuation = v3_continuation(runtime)?;
-        let state = requires_continuation(plan).then(|| continuation.build());
-        let (observed, tap_out) = execute_prepared_position_exits_with_taps(
-            plan,
-            &ops,
-            &prompt_ids,
-            runtime.backend(),
-            state,
-            &[last],
-            &taps,
-            &mut sink,
-        )
-        .map_err(|e| LqlError::exec("DLA forward pass failed", e))?;
+        let can_prefix_cache = taps.attn_head_out.is_empty()
+            && taps.attn_weights.is_empty()
+            && prefix_cache::plan_supports_prefix_cache(runtime);
+        let (observed, tap_out) = if let Some(ref key) = cache_key.filter(|_| can_prefix_cache) {
+            let (mut kv, prefix_len) = prefix_cache::acquire_prefix_state(
+                runtime,
+                &ops,
+                prepared_cache.prefix(),
+                key,
+                &prompt_ids,
+                last,
+            )?;
+            let local_last = last - prefix_len;
+            let (obs, to) = execute_prepared_prefill_position_exits_with_taps(
+                plan,
+                &ops,
+                &prompt_ids[prefix_len..],
+                runtime.backend(),
+                &mut kv,
+                &[local_last],
+                &taps,
+                &mut sink,
+            )
+            .map_err(|e| LqlError::exec("DLA forward pass failed", e))?;
+            prepared_cache.prefix().record_snapshot(
+                key,
+                prompt_ids.clone(),
+                kv,
+                obs.output.logits.clone(),
+            );
+            (obs, to)
+        } else {
+            let continuation = v3_continuation(runtime)?;
+            let state = requires_continuation(plan).then(|| continuation.build());
+            execute_prepared_position_exits_with_taps(
+                plan,
+                &ops,
+                &prompt_ids,
+                runtime.backend(),
+                state,
+                &[last],
+                &taps,
+                &mut sink,
+            )
+            .map_err(|e| LqlError::exec("DLA forward pass failed", e))?
+        };
 
         let exit = observed
             .exits
@@ -319,7 +354,9 @@ impl Session {
             let down_in_rows = tap_out.ffn_down_input.get(&l).ok_or_else(|| {
                 LqlError::Execution(format!("DLA: layer {l} ffn.down_input was not captured"))
             })?;
-            let act = &down_in_rows[last];
+            let act = down_in_rows.last().ok_or_else(|| {
+                LqlError::Execution(format!("DLA: layer {l} ffn.down_input empty"))
+            })?;
 
             // Effective direction entering `W_down` output space (`down_output` before post_ffn_norm).
             let mut u_ffn = u_eff.clone();
@@ -342,7 +379,10 @@ impl Session {
                 let down_out_rows = tap_out.ffn_down_output.get(&l).ok_or_else(|| {
                     LqlError::Execution(format!("DLA: layer {l} ffn.down_output was not captured"))
                 })?;
-                u_ffn = linearize_norm(&source, post_norm, &down_out_rows[last], &u_ffn)
+                let down_out_last = down_out_rows.last().ok_or_else(|| {
+                    LqlError::Execution(format!("DLA: layer {l} ffn.down_output empty"))
+                })?;
+                u_ffn = linearize_norm(&source, post_norm, down_out_last, &u_ffn)
                     .map_err(|e| LqlError::exec("DLA failed to linearize post_ffn_norm", e))?;
             }
 
