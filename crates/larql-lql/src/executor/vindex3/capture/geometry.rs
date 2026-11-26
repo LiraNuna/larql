@@ -70,6 +70,7 @@ impl Session {
                 })
                 .collect::<Option<Vec<_>>>()
                 .and_then(|sizes| sizes.into_iter().max()),
+            CaptureSite::AttnWeights => None,
             CaptureSite::ShortConvGateB
             | CaptureSite::ShortConvGateC
             | CaptureSite::ShortConvConvOut

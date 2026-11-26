@@ -107,13 +107,15 @@ impl ProductionBackend {
             None,
             None,
             None,
+            None,
         )
     }
 
-    /// [`Self::attend_position`], additionally returning the pre-`o_proj`
-    /// gated per-head concatenation `[num_q_heads * head_dim]`.
-    #[allow(clippy::too_many_arguments)]
-    pub(in super::super) fn attend_position_with_head_out<'k>(
+    /// [`Self::attend_position`], optionally capturing the pre-`o_proj` gated per-head
+    /// concatenation `[num_q_heads * head_dim]` and/or per-head softmax attention weights
+    /// `[num_q_heads * seq_len]` (causal and sliding-window zero-padded).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub(in super::super) fn attend_position_observed<'k>(
         call: &AttentionCall<'_>,
         position: usize,
         query: &[f32],
@@ -121,8 +123,11 @@ impl ProductionBackend {
         value_of: impl Fn(usize) -> &'k [f32],
         gate_input: &[f32],
         projected_gate: Option<&[f32]>,
-    ) -> Result<(Vec<f32>, Vec<f32>), VindexError> {
-        let mut head_out = Vec::new();
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>, Option<Vec<f32>>), VindexError> {
+        let mut head_out = want_head_out.then(Vec::new);
+        let mut weights = want_weights.then(Vec::new);
         let output = Self::attend_position_tapped(
             call,
             position,
@@ -133,9 +138,10 @@ impl ProductionBackend {
             projected_gate,
             None,
             None,
-            Some(&mut head_out),
+            head_out.as_mut(),
+            weights.as_mut(),
         )?;
-        Ok((output, head_out))
+        Ok((output, head_out, weights))
     }
 
     /// [`Self::attend_position`] with the V3-HEAD-OBS-1 tap: when armed,
@@ -156,18 +162,32 @@ impl ProductionBackend {
         tap: Option<&mut dyn FnMut(AttentionHeadRecord<'_>)>,
         head_intervene: Option<&mut super::super::backend::HeadIntervene<'_>>,
         head_out_capture: Option<&mut Vec<f32>>,
+        weights_capture: Option<&mut Vec<f32>>,
     ) -> Result<Vec<f32>, VindexError> {
         let head_dim = call.head_dim;
         let q_rows = call.num_q_heads * head_dim;
         let mut kept: Vec<Vec<f32>> = Vec::new();
+        let keep_dists = tap.is_some() || weights_capture.is_some();
         let mut concat = aggregate_heads_keeping(
             call,
             position,
             query,
             &key_of,
             &value_of,
-            tap.as_ref().map(|_| &mut kept),
+            keep_dists.then_some(&mut kept),
         );
+        if let Some(dst) = weights_capture {
+            let seq_len = call.inputs.len().max(position + 1);
+            let start = source_start(call, position);
+            let active = position + 1 - start;
+            let mut row = vec![0.0f32; call.num_q_heads * seq_len];
+            for (h, dist) in kept.iter().enumerate() {
+                let copy_len = active.min(dist.len());
+                row[h * seq_len + start..h * seq_len + start + copy_len]
+                    .copy_from_slice(&dist[..copy_len]);
+            }
+            *dst = row;
+        }
 
         // The gate values, computed before anything multiplies the heads,
         // so a tap can carry each head's activated slice; the multiply
@@ -320,6 +340,7 @@ impl ProductionBackend {
                     gate.as_deref(),
                     tap,
                     head_intervene,
+                    None,
                     None,
                 )
             })?;

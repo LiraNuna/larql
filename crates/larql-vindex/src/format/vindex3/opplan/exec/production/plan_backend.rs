@@ -151,10 +151,16 @@ impl PlanBackend for ProductionBackend {
         true
     }
 
-    fn attention_with_head_out(
+    fn serves_attn_weights(&self) -> bool {
+        true
+    }
+
+    fn attention_observed(
         &self,
         call: AttentionCall<'_>,
-    ) -> Result<(AttentionOut, Vec<Vec<f32>>), VindexError> {
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(AttentionOut, Option<Vec<Vec<f32>>>, Option<Vec<Vec<f32>>>), VindexError> {
         let projected: Vec<ProjectedAttention> = call
             .inputs
             .par_iter()
@@ -176,11 +182,11 @@ impl PlanBackend for ProductionBackend {
             gates.push(gate);
         }
 
-        let pairs: Vec<(Vec<f32>, Vec<f32>)> = queries
+        let triples: Vec<_> = queries
             .par_iter()
             .enumerate()
             .map(|(position, query)| {
-                Self::attend_position_with_head_out(
+                Self::attend_position_observed(
                     &call,
                     position,
                     query,
@@ -188,10 +194,23 @@ impl PlanBackend for ProductionBackend {
                     |p| values[p].as_slice(),
                     &call.inputs[position],
                     gates[position].as_deref(),
+                    want_head_out,
+                    want_weights,
                 )
             })
             .collect::<Result<_, VindexError>>()?;
-        let (outputs, head_outs): (Vec<Vec<f32>>, Vec<Vec<f32>>) = pairs.into_iter().unzip();
+        let mut outputs = Vec::with_capacity(triples.len());
+        let mut head_outs = want_head_out.then(|| Vec::with_capacity(triples.len()));
+        let mut weights = want_weights.then(|| Vec::with_capacity(triples.len()));
+        for (out, ho, w) in triples {
+            outputs.push(out);
+            if let (Some(dst), Some(v)) = (head_outs.as_mut(), ho) {
+                dst.push(v);
+            }
+            if let (Some(dst), Some(v)) = (weights.as_mut(), w) {
+                dst.push(v);
+            }
+        }
         Ok((
             AttentionOut {
                 outputs,
@@ -199,6 +218,7 @@ impl PlanBackend for ProductionBackend {
                 values,
             },
             head_outs,
+            weights,
         ))
     }
 

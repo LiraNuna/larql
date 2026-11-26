@@ -358,13 +358,22 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
             let want_head_out = taps
                 .as_ref()
                 .is_some_and(|(req, _)| req.attn_head_out.contains(&index));
+            let want_weights = taps
+                .as_ref()
+                .is_some_and(|(req, _)| req.attn_weights.contains(&index));
             match kv {
                 Some((kv, layer_index)) if kv.position() == 0 => {
                     let call = ops.call(attention_op, &inputs, layer.declared_norm_eps, hidden);
-                    let out = if want_head_out {
-                        let (out, head_outs) = backend.attention_with_head_out(call)?;
+                    let out = if want_head_out || want_weights {
+                        let (out, head_outs, weights) =
+                            backend.attention_observed(call, want_head_out, want_weights)?;
                         if let Some((_, tap_out)) = taps.as_mut() {
-                            tap_out.attn_head_out.insert(index, head_outs);
+                            if let Some(ho) = head_outs {
+                                tap_out.attn_head_out.insert(index, ho);
+                            }
+                            if let Some(w) = weights {
+                                tap_out.attn_weights.insert(index, w);
+                            }
                         }
                         out
                     } else {
@@ -390,10 +399,16 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
                 }
                 None => {
                     let call = ops.call(attention_op, &inputs, layer.declared_norm_eps, hidden);
-                    if want_head_out {
-                        let (out, head_outs) = backend.attention_with_head_out(call)?;
+                    if want_head_out || want_weights {
+                        let (out, head_outs, weights) =
+                            backend.attention_observed(call, want_head_out, want_weights)?;
                         if let Some((_, tap_out)) = taps.as_mut() {
-                            tap_out.attn_head_out.insert(index, head_outs);
+                            if let Some(ho) = head_outs {
+                                tap_out.attn_head_out.insert(index, ho);
+                            }
+                            if let Some(w) = weights {
+                                tap_out.attn_weights.insert(index, w);
+                            }
                         }
                         out.outputs
                     } else {

@@ -96,14 +96,40 @@ pub trait PlanBackend: Sync {
         false
     }
 
+    /// Whether [`Self::attention_observed`] returns per-head attention weight
+    /// matrices (`[T][num_q_heads * seq_len]`, causal/window zero-padded).
+    fn serves_attn_weights(&self) -> bool {
+        false
+    }
+
     /// [`Self::attention`], additionally returning each position's pre-`o_proj`
     /// gated per-head concatenation `[num_q_heads * head_dim]`.
     fn attention_with_head_out(
         &self,
-        _call: AttentionCall<'_>,
+        call: AttentionCall<'_>,
     ) -> Result<(AttentionOut, Vec<Vec<f32>>), VindexError> {
+        let (out, head_outs, _) = self.attention_observed(call, true, false)?;
+        Ok((out, head_outs.unwrap_or_default()))
+    }
+
+    /// [`Self::attention`], optionally capturing per-head pre-`o_proj` outputs
+    /// (`[T][num_q_heads * head_dim]`) and/or per-head softmax attention weights
+    /// (`[T][num_q_heads * seq_len]`) in the same pass.
+    #[allow(clippy::type_complexity)]
+    fn attention_observed(
+        &self,
+        _call: AttentionCall<'_>,
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(AttentionOut, Option<Vec<Vec<f32>>>, Option<Vec<Vec<f32>>>), VindexError> {
+        let what = match (want_head_out, want_weights) {
+            (true, true) => "attn.head_out / attn.weights",
+            (true, false) => "attn.head_out",
+            (false, true) => "attn.weights",
+            (false, false) => "attention observation",
+        };
         Err(VindexError::Parse(format!(
-            "attn.head_out capture is not served by the {} backend",
+            "{what} capture is not served by the {} backend",
             self.name()
         )))
     }

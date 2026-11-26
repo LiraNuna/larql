@@ -113,6 +113,10 @@ impl Parser {
                     self.advance();
                     name = format!("{name}.{second}");
                 }
+                Token::Keyword(kw) => {
+                    self.advance();
+                    name = format!("{name}.{}", kw.as_field_name());
+                }
                 _ => return Err(self.unknown_site(&format!("{name}."))),
             }
         }

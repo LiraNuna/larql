@@ -232,11 +232,24 @@ impl<T: PlanBackend + Send + ?Sized> PlanBackend for std::sync::Arc<T> {
         (**self).serves_attn_head_out()
     }
 
+    fn serves_attn_weights(&self) -> bool {
+        (**self).serves_attn_weights()
+    }
+
     fn attention_with_head_out(
         &self,
         call: AttentionCall<'_>,
     ) -> Result<(AttentionOut, Vec<Vec<f32>>), VindexError> {
         (**self).attention_with_head_out(call)
+    }
+
+    fn attention_observed(
+        &self,
+        call: AttentionCall<'_>,
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(AttentionOut, Option<Vec<Vec<f32>>>, Option<Vec<Vec<f32>>>), VindexError> {
+        (**self).attention_observed(call, want_head_out, want_weights)
     }
 
     fn attention_step(&self, call: AttentionStepCall<'_>) -> Result<AttentionStepOut, VindexError> {

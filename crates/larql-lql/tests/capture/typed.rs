@@ -521,6 +521,12 @@ fn capture_geometry_is_the_width_every_site_captures() {
                 positions: &CapturePositions::Last,
             })
             .unwrap();
+        if site == CaptureSite::AttnWeights {
+            // `attn.weights` ends in `seq_len`, which is sequence-dependent rather than a static plan width.
+            assert_eq!(geometry.width, None, "{}", site.name());
+            assert_eq!(captured.shape.len(), 2, "{}", site.name());
+            continue;
+        }
         assert_eq!(
             geometry.width,
             captured.shape.last().copied(),

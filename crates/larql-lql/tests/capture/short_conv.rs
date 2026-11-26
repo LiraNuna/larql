@@ -550,3 +550,90 @@ fn staged_remove_direction_and_add_low_rank_execute_live_for_infer_and_capture_o
     capture(&mut s, &format!("logits FOR \"{PROMPT}\""), &after_logits);
     assert_eq!(bits(&read_npy(&after_logits).values), base_logits_bits);
 }
+
+#[test]
+fn attn_weights_captures_full_and_sliding_distributions_and_refuses_short_conv() {
+    let fx = HybridShortConvFixture::new();
+    let mut s = fx.session();
+
+    // Multi-layer LAST capture over sliding (L1, window=3) and full (L3) attention layers.
+    let weights_last = fx.path("attn_weights_last.npy");
+    capture(
+        &mut s,
+        &format!("attn.weights AT LAYERS (1, 3) FOR \"{PROMPT}\""),
+        &weights_last,
+    );
+    let arr = read_npy(&weights_last);
+    // PROMPT = "The capital of France is" -> 5 tokens; 2 layers, 4 q_heads, seq_len = 5.
+    assert_eq!(arr.shape, vec![2, SC_Q_HEADS, 5]);
+    // Layer 1 (sliding window = 3, last pos = 4): attends only to keys [2, 3, 4]; keys [0, 1] are 0.
+    for h in 0..SC_Q_HEADS {
+        let base = h * 5;
+        assert_eq!(arr.values[base], 0.0, "sliding L1 head {h} key 0 must be 0");
+        assert_eq!(
+            arr.values[base + 1],
+            0.0,
+            "sliding L1 head {h} key 1 must be 0"
+        );
+        let sum: f32 = arr.values[base..base + 5].iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "sliding L1 head {h} sum = {sum}");
+    }
+    // Layer 3 (full attention, last pos = 4): all keys [0..5] active and sum to 1.0.
+    for h in 0..SC_Q_HEADS {
+        let base = SC_Q_HEADS * 5 + h * 5;
+        let sum: f32 = arr.values[base..base + 5].iter().sum();
+        assert!((sum - 1.0).abs() < 1e-5, "full L3 head {h} sum = {sum}");
+        assert!(
+            arr.values[base..base + 5].iter().all(|&v| v >= 0.0),
+            "attention weights must be non-negative"
+        );
+    }
+
+    // Single-layer ALL positions capture: [positions, n_q_heads, seq_len] with strict causal zeros.
+    let weights_all = fx.path("attn_weights_all.npy");
+    capture(
+        &mut s,
+        &format!("attn.weights AT LAYER 3 FOR \"{PROMPT}\" POSITIONS ALL"),
+        &weights_all,
+    );
+    let all = read_npy(&weights_all);
+    assert_eq!(all.shape, vec![5, SC_Q_HEADS, 5]);
+    for q in 0..5 {
+        for h in 0..SC_Q_HEADS {
+            let base = (q * SC_Q_HEADS + h) * 5;
+            for k in (q + 1)..5 {
+                assert_eq!(
+                    all.values[base + k],
+                    0.0,
+                    "causal future key {k} > query {q} must be 0"
+                );
+            }
+            let sum: f32 = all.values[base..=base + q].iter().sum();
+            assert!((sum - 1.0).abs() < 1e-5, "q={q} h={h} sum={sum}");
+        }
+    }
+
+    // Multi-site single-pass capture of (attn.head_out, attn.weights) matches single-site bit-for-bit.
+    let multi_dir = fx.path("multi_attn");
+    run(
+        &mut s,
+        &format!(
+            "CAPTURE (attn.head_out, attn.weights) AT LAYERS (1, 3) FOR \"{PROMPT}\" TO \"{}\";",
+            q(&multi_dir)
+        ),
+    );
+    let multi_w = read_npy(&multi_dir.join("attn.weights.npy"));
+    assert_eq!(multi_w.shape, arr.shape);
+    assert_eq!(bits(&multi_w.values), bits(&arr.values));
+
+    // Refuses on a ShortConv layer (L0).
+    let err = try_run(
+        &mut s,
+        &format!(
+            "CAPTURE attn.weights AT LAYER 0 FOR \"{PROMPT}\" TO \"{}\";",
+            q(fx.path("bad_w.npy"))
+        ),
+    )
+    .unwrap_err();
+    assert!(err.contains("softmax attention"), "{err}");
+}

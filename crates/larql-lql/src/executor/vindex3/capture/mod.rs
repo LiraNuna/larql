@@ -143,7 +143,17 @@ fn statement_text(request: &CaptureRequest<'_>) -> String {
 }
 
 /// Every block holds one row per position, and every row has the same width.
-fn checked_shape(blocks: &[Rows], positions: usize, stacked: bool) -> Result<Vec<usize>, LqlError> {
+/// For `attn.weights`, each row holds `[num_q_heads, seq_len]` flattened, so the exported
+/// shape splits that tail axis into `(num_q_heads, seq_len)` — yielding `[n_layers, n_q_heads, seq_len]`
+/// for multi-layer single-position captures (`POSITIONS LAST`), `[n_q_heads, seq_len]` for a single
+/// layer & position, or `[..., positions, n_q_heads, seq_len]` when multiple positions are captured.
+fn checked_shape(
+    site: CaptureSite,
+    blocks: &[Rows],
+    positions: usize,
+    stacked: bool,
+    seq_len: usize,
+) -> Result<Vec<usize>, LqlError> {
     let width = blocks.first().and_then(|b| b.first()).map_or(0, Vec::len);
     let consistent = !blocks.is_empty()
         && width > 0
@@ -155,6 +165,24 @@ fn checked_shape(blocks: &[Rows], positions: usize, stacked: bool) -> Result<Vec
             "{STATEMENT}: the executor did not report one value of a single width at every requested layer \
              and position"
         )));
+    }
+    if site == CaptureSite::AttnWeights {
+        if seq_len == 0 || !width.is_multiple_of(seq_len) {
+            return Err(LqlError::Execution(format!(
+                "{STATEMENT}: attn.weights row width {width} is not a multiple of sequence length {seq_len}"
+            )));
+        }
+        let n_heads = width / seq_len;
+        let mut shape = Vec::with_capacity(4);
+        if stacked {
+            shape.push(blocks.len());
+        }
+        if positions > 1 {
+            shape.push(positions);
+        }
+        shape.push(n_heads);
+        shape.push(seq_len);
+        return Ok(shape);
     }
     Ok(if stacked {
         vec![blocks.len(), positions, width]
@@ -249,7 +277,7 @@ impl Session {
         let path = PATH_INFER_PASS;
         let cross_check = serde_json::Value::Null;
         let stacked = matches!(spec.layers, Some(CaptureLayers::Many(_)));
-        let shape = checked_shape(&blocks, positions.len(), stacked)?;
+        let shape = checked_shape(site, &blocks, positions.len(), stacked, sequence.ids.len())?;
 
         let decode = |id: u32| tokenizer.decode(&[id], false).unwrap_or_default();
         let position_records: Vec<serde_json::Value> = positions
@@ -474,7 +502,13 @@ impl Session {
         for (site, npy_path, sidecar_path) in &planned_paths {
             let blocks = all_blocks.remove(site).unwrap_or_default();
             let site_stacked = site.per_layer() && stacked;
-            let shape = match checked_shape(&blocks, positions.len(), site_stacked) {
+            let shape = match checked_shape(
+                *site,
+                &blocks,
+                positions.len(),
+                site_stacked,
+                sequence.ids.len(),
+            ) {
                 Ok(s) => s,
                 Err(e) => {
                     let refs: Vec<&std::path::Path> = written_files
