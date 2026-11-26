@@ -78,6 +78,9 @@ pub(crate) enum Backend {
         /// The `.vlp` file behind each applied patch, as `APPLY PATCH` read it: index-aligned with
         /// `overlay.patches`, so a capture names the exact bytes applied.
         patch_files: Vec<crate::executor::vindex3::AppliedPatchFile>,
+        /// Optional relation classifier loaded from sidecar `feature_labels.json`
+        /// and/or `relation_clusters.json` + `feature_clusters.jsonl` in the container.
+        relation_classifier: Option<RelationClassifier>,
     },
     /// Remote server backend — queries forwarded via HTTP. Every request
     /// carries `session_id`, so mutations and patches live in this
@@ -197,6 +200,10 @@ impl Session {
     pub(crate) fn relation_classifier(&self) -> Option<&RelationClassifier> {
         match &self.backend {
             Backend::Vindex {
+                relation_classifier,
+                ..
+            }
+            | Backend::Vindex3 {
                 relation_classifier,
                 ..
             } => relation_classifier.as_ref(),

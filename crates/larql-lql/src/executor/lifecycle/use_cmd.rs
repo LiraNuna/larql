@@ -158,14 +158,30 @@ impl Session {
         let source = self.representation_source;
         let (runtime, tokenizer, knowledge) = crate::executor::vindex3::bind(&path, source)?;
         let plan_layers = runtime.plan().layers.len();
+        let relation_classifier = RelationClassifier::from_vindex(&path);
+        let rc_status = match &relation_classifier {
+            Some(rc) if rc.has_clusters() && rc.num_probe_labels() > 0 => format!(
+                ", relations: {} types, {} probe-confirmed",
+                rc.num_clusters(),
+                rc.num_probe_labels()
+            ),
+            Some(rc) if rc.has_clusters() => {
+                format!(", relations: {} types", rc.num_clusters())
+            }
+            Some(rc) if rc.num_probe_labels() > 0 => {
+                format!(", relations: {} probe-confirmed", rc.num_probe_labels())
+            }
+            _ => String::new(),
+        };
         let mut out = vec![
             format!(
                 "Using: {} (VINDEX3, model: {}, component {}, {} layers, \
-                 execution closed)",
+                 execution closed{})",
                 path.display(),
                 runtime.model_name(),
                 crate::executor::vindex3::V3_COMPONENT,
                 plan_layers,
+                rc_status,
             ),
             format!(
                 "Supported: {}. Tokenizer: {}.",
@@ -210,6 +226,7 @@ impl Session {
             overlay,
             bos_token,
             patch_files: Vec::new(),
+            relation_classifier,
         };
         self.reset_binding_state();
         Ok(out)

@@ -376,6 +376,7 @@ impl Session {
             path,
             runtime,
             tokenizer,
+            relation_classifier,
             ..
         } = &self.backend
         else {
@@ -478,7 +479,7 @@ impl Session {
             }
         };
 
-        Ok(vec![
+        let mut out = vec![
             format!("Model:           {} (VINDEX3)", runtime.model_name()),
             format!("Path:            {}", path.display()),
             "Generation:      3".into(),
@@ -503,8 +504,24 @@ impl Session {
                     "absent (token-id capability only)"
                 }
             ),
-            format!("Capabilities:    {}", supported()),
-        ])
+        ];
+        if let Some(rc) = relation_classifier {
+            let num_types = rc.relation_labels().len();
+            let mut parts = Vec::new();
+            if rc.num_probe_labels() > 0 {
+                parts.push(format!("{} probe-confirmed", rc.num_probe_labels()));
+            }
+            if rc.has_clusters() {
+                parts.push(format!("{} clusters", rc.num_clusters()));
+            }
+            out.push(format!(
+                "Relations:       {} ({} distinct types)",
+                parts.join(", "),
+                num_types,
+            ));
+        }
+        out.push(format!("Capabilities:    {}", supported()));
+        Ok(out)
     }
 
     /// `SHOW LAYERS` on a V3 binding: per-layer attention facts, read

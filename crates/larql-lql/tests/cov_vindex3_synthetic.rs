@@ -462,3 +462,57 @@ fn weight_edits_join_the_anonymous_patch_and_refuse_to_compile_with_knowledge() 
     );
     assert!(!out.exists(), "a refused COMPILE writes nothing");
 }
+
+#[test]
+fn relation_classifier_loads_on_vindex3_for_stats_show_select_and_describe() {
+    let container = encode(miniature_glimmer, "v3-relations", Some(G_VOCAB));
+    std::fs::write(
+        container
+            .path()
+            .join(larql_vindex::format::filenames::FEATURE_LABELS_JSON),
+        r#"{"L0_F0":"capital","L1_F1":"language"}"#,
+    )
+    .unwrap();
+
+    let mut session = Session::new();
+    let use_out = run(
+        &mut session,
+        &format!("USE \"{}\";", lql_path(container.path())),
+    );
+    assert!(
+        has(&use_out, "relations: 2 probe-confirmed"),
+        "USE reports loaded probe labels: {use_out:?}"
+    );
+
+    let stats = run(&mut session, "STATS;");
+    assert!(
+        has(&stats, "Relations:") && has(&stats, "2 probe-confirmed (2 distinct types)"),
+        "STATS reports relation coverage: {stats:?}"
+    );
+
+    let shown = run(&mut session, "SHOW RELATIONS;");
+    assert!(
+        has(&shown, "Probe-confirmed relations (2 labels):")
+            && has(&shown, "capital")
+            && has(&shown, "language"),
+        "SHOW RELATIONS lists V3 probe-confirmed labels: {shown:?}"
+    );
+
+    let selected = run(
+        &mut session,
+        r#"SELECT * FROM EDGES WHERE relation = "capital";"#,
+    );
+    assert!(
+        has(&selected, "capital") && !has(&selected, "language"),
+        "SELECT WHERE relation filters via the V3 relation classifier: {selected:?}"
+    );
+
+    let described = run(
+        &mut session,
+        &format!("DESCRIBE \"{PROMPT}\" RELATIONS ONLY;"),
+    );
+    assert!(
+        !described.is_empty(),
+        "DESCRIBE RELATIONS ONLY executes cleanly with V3 classifier: {described:?}"
+    );
+}

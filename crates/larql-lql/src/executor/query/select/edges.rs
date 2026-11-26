@@ -425,6 +425,37 @@ fn collect_via_scan(
             }
             continue;
         }
+        // Fast sparse relation pre-filter: when a relation predicate narrows
+        // the layer to a minority of slots, annotate only those slots rather
+        // than materialising the whole layer's `embedding · down` matrix.
+        if let (Some(rel), Some(rc)) = (relation_filter, classifier) {
+            let matching: Vec<usize> = (0..nf)
+                .filter(|&feat| {
+                    let label = rc.label_for_feature(*layer, feat).unwrap_or("");
+                    rel.matches(label)
+                })
+                .collect();
+            if matching.is_empty() {
+                continue;
+            }
+            if matching.len() * 4 <= nf {
+                let metas = source.feature_metas_batch(*layer, &matching);
+                for (feat_idx, meta) in matching.into_iter().zip(metas) {
+                    if let Some(meta) = meta {
+                        push_scan_row(
+                            *layer,
+                            feat_idx,
+                            &meta,
+                            classifier,
+                            entity_filter,
+                            None,
+                            rows,
+                        );
+                    }
+                }
+                continue;
+            }
+        }
         // Fast exact top-token pruning on VINDEX3 when filtering by `entity`.
         if let Some(ent) = entity_filter {
             let needle = ent.to_lowercase();

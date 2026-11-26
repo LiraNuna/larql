@@ -73,22 +73,33 @@ impl Session {
         let ctx = self.browse()?;
 
         let all_layers = ctx.source.loaded_layers();
+        let (default_lo, default_hi) = ctx.bands.knowledge;
         let scan_layers: Vec<usize> = if let Some(l) = layer_filter {
             vec![l as usize]
         } else {
-            all_layers
+            let banded: Vec<usize> = all_layers
                 .iter()
                 .copied()
-                .filter(|l| *l >= 14 && *l <= 27)
-                .collect()
+                .filter(|l| *l >= default_lo && *l <= default_hi)
+                .collect();
+            if banded.is_empty() {
+                all_layers.clone()
+            } else {
+                banded
+            }
         };
 
         // ── Probe-confirmed relations (skip for Raw mode) ──
+        let probe_layers: &[usize] = if layer_filter.is_some() {
+            &scan_layers
+        } else {
+            &all_layers
+        };
         let classifier = self.relation_classifier();
         let mut probe_relations: HashMap<String, usize> = HashMap::new();
         if mode != DescribeMode::Raw {
             if let Some(rc) = classifier {
-                for &layer in &scan_layers {
+                for &layer in probe_layers {
                     let num_features = ctx.source.num_features(layer);
                     for feat in 0..num_features {
                         if let Some(label) = rc.label_for_feature(layer, feat) {
@@ -159,8 +170,10 @@ impl Session {
         let mut out = Vec::new();
         let layer_label = if let Some(l) = layer_filter {
             format!("L{}", l)
+        } else if let (Some(&first), Some(&last)) = (scan_layers.first(), scan_layers.last()) {
+            format!("L{}-{}", first, last)
         } else {
-            "L14-27".into()
+            format!("L{}-{}", default_lo, default_hi)
         };
 
         // ── Probe-confirmed section ──
