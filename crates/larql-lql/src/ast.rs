@@ -340,13 +340,14 @@ pub enum Statement {
     },
 
     // ── Direct Logit Attribution ──
-    /// `DLA "<prompt>" FOR "<token_a>" VS "<token_b>" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (...)] [TOP <k> [COLUMNS]];`
+    /// `DLA "<prompt>" FOR "<token_a>" VS "<token_b>" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (...)] [TOP <k> [COLUMNS]] [TOP <m> HEADS];`
     Dla {
         prompt: String,
         target_a: String,
         target_b: String,
         layers: Option<CaptureLayers>,
         top_columns: Option<u32>,
+        top_heads: Option<u32>,
     },
 
     // ── Help ──

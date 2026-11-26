@@ -9,14 +9,16 @@
 use std::collections::BTreeSet;
 
 use larql_inference::vindex3::PlaneEvent;
-use larql_models::config::NormType;
 use larql_vindex::format::vindex3::opplan::exec::operands::OperandSource;
 use larql_vindex::format::vindex3::opplan::exec::{
-    execute_streaming_position_exits_with_taps, requires_continuation, BatchTapRequest, Plane,
+    execute_streaming_position_exits_with_taps, requires_continuation, BatchTapRequest,
 };
-use larql_vindex::format::vindex3::opplan::{LayerAttention, LayerFfn, NormOp, OperandRef};
-use larql_vindex::VindexError;
+use larql_vindex::format::vindex3::opplan::LayerFfn;
 
+use super::dla_math::{
+    dot_diff_f64, dot_f64, linearize_norm, load_two_rows, mixer_label, plane_rows,
+    resolve_dla_layers, resolve_single_token,
+};
 use super::{confirm_patched_weights_ran, encode_raw_prompt, execution_overrides, v3_continuation};
 use crate::ast::CaptureLayers;
 use crate::error::LqlError;
@@ -43,6 +45,15 @@ pub struct DlaColumnRow {
     pub contribution: f32,
 }
 
+/// One softmax attention head's direct logit attribution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DlaHeadRow {
+    pub layer: usize,
+    pub head: usize,
+    pub head_norm: f32,
+    pub contribution: f32,
+}
+
 /// Typed result of `DLA "<prompt>" FOR "<token_a>" VS "<token_b>" ...;`.
 #[derive(Debug, Clone)]
 pub struct DlaReport {
@@ -61,6 +72,8 @@ pub struct DlaReport {
     pub layers: Vec<DlaLayerRow>,
     pub top_columns: Vec<DlaColumnRow>,
     pub dense_ffn_layers_attributed: usize,
+    pub top_heads: Vec<DlaHeadRow>,
+    pub softmax_layers_attributed: usize,
     pub executes_patched: bool,
     pub elapsed_ms: f64,
 }
@@ -74,6 +87,7 @@ impl Session {
         target_b: &str,
         layers: Option<&CaptureLayers>,
         top_columns: Option<u32>,
+        top_heads: Option<u32>,
     ) -> Result<DlaReport, LqlError> {
         let (runtime, tokenizer, overlay, bos_token) = self.v3_text_program("DLA")?;
         let plan = runtime.plan();
@@ -92,9 +106,15 @@ impl Session {
 
         let requested_layers = resolve_dla_layers(layers, plan.layers.len())?;
         let top_k = top_columns.unwrap_or(0) as usize;
+        let top_h = top_heads.unwrap_or(0) as usize;
         if top_columns == Some(0) {
             return Err(LqlError::Execution(
                 "DLA: TOP column count must be at least 1".into(),
+            ));
+        }
+        if top_heads == Some(0) {
+            return Err(LqlError::Execution(
+                "DLA: TOP head count must be at least 1".into(),
             ));
         }
 
@@ -118,6 +138,7 @@ impl Session {
         let last = prompt_ids.len() - 1;
         let mut taps = BatchTapRequest::default();
         let mut dense_layers: Vec<usize> = Vec::new();
+        let mut softmax_layers: Vec<usize> = Vec::new();
         if top_k > 0 {
             for &l in &requested_layers {
                 if plan.layers[l]
@@ -131,6 +152,14 @@ impl Session {
                         taps.ffn_down_output.insert(l);
                     }
                     dense_layers.push(l);
+                }
+            }
+        }
+        if top_h > 0 {
+            for &l in &requested_layers {
+                if plan.layers[l].attention.softmax().is_some() {
+                    taps.attn_head_out.insert(l);
+                    softmax_layers.push(l);
                 }
             }
         }
@@ -335,6 +364,116 @@ impl Session {
         });
         columns.truncate(top_k);
 
+        // Optional exact per-head softmax attention attribution across requested softmax layers.
+        let mut heads: Vec<DlaHeadRow> = Vec::new();
+        for &l in &softmax_layers {
+            let layer_plan = &plan.layers[l];
+            let Some(attn_op) = layer_plan.attention.softmax() else {
+                continue;
+            };
+            let head_out_rows = tap_out.attn_head_out.get(&l).ok_or_else(|| {
+                LqlError::Execution(format!("DLA: layer {l} attn.head_out was not captured"))
+            })?;
+            let head_out = &head_out_rows[last];
+            let q_rows = attn_op.num_q_heads * attn_op.head_dim;
+            let w_o = source
+                .load(&attn_op.o)
+                .map_err(|e| LqlError::exec("DLA failed to load attention o_proj", e))?;
+            if w_o.len() != hidden * q_rows || head_out.len() != q_rows {
+                return Err(LqlError::Execution(format!(
+                    "DLA: layer {l} o_proj shape mismatch (got {} weights, {} head_out, expected {hidden}x{q_rows})",
+                    w_o.len(),
+                    head_out.len()
+                )));
+            }
+
+            let mut u_attn = u_eff.clone();
+            if let Some(scale) = layer_plan.residual_scale {
+                for v in &mut u_attn {
+                    *v *= scale;
+                }
+            }
+            if let Some(layer_scale_ref) = &layer_plan.layer_scale {
+                let s = source
+                    .load(layer_scale_ref)
+                    .map_err(|e| LqlError::exec("DLA failed to load layer_scale", e))?;
+                if let Some(&scalar) = s.first() {
+                    for v in &mut u_attn {
+                        *v *= scalar;
+                    }
+                }
+            }
+            if let Some(post_norm) = &layer_plan.post_attention_norm {
+                // Reconstruct exact pre-post_attention_norm output `W_o @ head_out + o_bias`
+                // as the linearization operating point.
+                let o_bias = attn_op
+                    .o_bias
+                    .as_ref()
+                    .map(|b| source.load(b))
+                    .transpose()
+                    .map_err(|e| LqlError::exec("DLA failed to load o_proj bias", e))?;
+                let mut attn_out = vec![0.0f32; hidden];
+                for (r, dst) in attn_out.iter_mut().enumerate() {
+                    let row = &w_o[r * q_rows..(r + 1) * q_rows];
+                    let mut sum: f64 = row
+                        .iter()
+                        .zip(head_out.iter())
+                        .map(|(&w, &x)| (w as f64) * (x as f64))
+                        .sum();
+                    if let Some(ref bias) = o_bias {
+                        sum += bias[r] as f64;
+                    }
+                    *dst = sum as f32;
+                }
+                u_attn = linearize_norm(&source, post_norm, &attn_out, &u_attn).map_err(|e| {
+                    LqlError::exec("DLA failed to linearize post_attention_norm", e)
+                })?;
+            }
+
+            // Compute `in_proj[j] = sum_r u_attn[r] * W_o[r, j]` in cache-friendly row-major order.
+            let mut in_proj = vec![0.0f64; q_rows];
+            for (r, &ur) in u_attn.iter().enumerate() {
+                let ur = ur as f64;
+                if ur == 0.0 {
+                    continue;
+                }
+                let row = &w_o[r * q_rows..(r + 1) * q_rows];
+                for (acc, &w) in in_proj.iter_mut().zip(row.iter()) {
+                    *acc += ur * (w as f64);
+                }
+            }
+
+            let hd = attn_op.head_dim;
+            for h in 0..attn_op.num_q_heads {
+                let ho = &head_out[h * hd..(h + 1) * hd];
+                let pr = &in_proj[h * hd..(h + 1) * hd];
+                let contrib: f64 = ho
+                    .iter()
+                    .zip(pr.iter())
+                    .map(|(&x, &p)| (x as f64) * p)
+                    .sum();
+                let norm: f64 = ho
+                    .iter()
+                    .map(|&x| (x as f64) * (x as f64))
+                    .sum::<f64>()
+                    .sqrt();
+                heads.push(DlaHeadRow {
+                    layer: l,
+                    head: h,
+                    head_norm: norm as f32,
+                    contribution: contrib as f32,
+                });
+            }
+        }
+        heads.sort_by(|a, b| {
+            b.contribution
+                .abs()
+                .total_cmp(&a.contribution.abs())
+                .then_with(|| a.layer.cmp(&b.layer))
+                .then_with(|| a.head.cmp(&b.head))
+        });
+        heads.truncate(top_h);
+
         Ok(DlaReport {
             prompt_ids,
             target_a: target_a.to_string(),
@@ -351,6 +490,8 @@ impl Session {
             layers: all_layer_rows,
             top_columns: columns,
             dense_ffn_layers_attributed: dense_layers.len(),
+            top_heads: heads,
+            softmax_layers_attributed: softmax_layers.len(),
             executes_patched,
             elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
         })
@@ -363,8 +504,9 @@ impl Session {
         target_b: &str,
         layers: Option<&CaptureLayers>,
         top_columns: Option<u32>,
+        top_heads: Option<u32>,
     ) -> Result<Vec<String>, LqlError> {
-        let report = self.dla(prompt, target_a, target_b, layers, top_columns)?;
+        let report = self.dla(prompt, target_a, target_b, layers, top_columns, top_heads)?;
         let mode = if report.executes_patched {
             "patched"
         } else {
@@ -443,222 +585,31 @@ impl Session {
             }
         }
 
-        out.push(format!("  {:.0}ms", report.elapsed_ms));
-        Ok(out)
-    }
-}
-
-fn resolve_dla_layers(
-    spec: Option<&CaptureLayers>,
-    num_layers: usize,
-) -> Result<Vec<usize>, LqlError> {
-    let raw: Vec<usize> = match spec {
-        None => (0..num_layers).collect(),
-        Some(CaptureLayers::One(l)) => vec![*l],
-        Some(CaptureLayers::Many(ls)) => ls.clone(),
-    };
-    let mut seen = BTreeSet::new();
-    for &l in &raw {
-        if l >= num_layers {
-            return Err(LqlError::Execution(format!(
-                "DLA: layer {l} is outside the program's 0..{num_layers} layers"
-            )));
-        }
-        if !seen.insert(l) {
-            return Err(LqlError::Execution(format!(
-                "DLA: layer {l} is listed more than once"
-            )));
-        }
-    }
-    Ok(raw)
-}
-
-fn resolve_single_token(
-    tokenizer: &larql_vindex::tokenizers::Tokenizer,
-    text: &str,
-    clause: &str,
-    vocab_size: usize,
-) -> Result<u32, LqlError> {
-    let encoding = tokenizer
-        .encode(text, false)
-        .map_err(|e| LqlError::exec("DLA tokenize target", e))?;
-    let ids = encoding.get_ids();
-    if ids.len() != 1 {
-        let pieces: Vec<String> = ids
-            .iter()
-            .map(|&id| {
-                format!(
-                    "{:?} [id {id}]",
-                    tokenizer.decode(&[id], false).unwrap_or_default()
-                )
-            })
-            .collect();
-        return Err(LqlError::Execution(format!(
-            "DLA {clause} {text:?} must encode to exactly 1 token, got {} ({})",
-            ids.len(),
-            pieces.join(", ")
-        )));
-    }
-    let id = ids[0];
-    if (id as usize) >= vocab_size {
-        return Err(LqlError::Execution(format!(
-            "DLA {clause} {text:?} resolved to token id {id}, outside vocabulary size {vocab_size}"
-        )));
-    }
-    Ok(id)
-}
-
-fn plane_rows<'a>(plane: &'a Plane, label: &str) -> Result<&'a [Vec<f32>], VindexError> {
-    plane.try_rows().map_err(|e| {
-        VindexError::Parse(format!(
-            "DLA: {label} has no single [hidden] row per position: {e}"
-        ))
-    })
-}
-
-fn mixer_label(attn: &LayerAttention) -> &'static str {
-    match attn {
-        LayerAttention::Softmax(op) if op.window.is_some() => "sliding",
-        LayerAttention::Softmax(_) => "full",
-        LayerAttention::ShortConv(_) => "short-conv",
-        LayerAttention::GatedDelta(_) => "gated-delta",
-        LayerAttention::Kda(_) => "kda",
-        LayerAttention::Mamba2(_) => "mamba2",
-        LayerAttention::Mla(_) => "mla",
-        LayerAttention::ConvQkv(_) => "conv-qkv",
-    }
-}
-
-fn dot_f64(a: &[f32], b: &[f32]) -> f64 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&x, &y)| (x as f64) * (y as f64))
-        .sum()
-}
-
-fn dot_diff_f64(u: &[f32], after: &[f32], before: &[f32]) -> f64 {
-    u.iter()
-        .zip(after.iter().zip(before.iter()))
-        .map(|(&ui, (&a, &b))| (ui as f64) * ((a as f64) - (b as f64)))
-        .sum()
-}
-
-/// Pull a linear direction `u` back through `norm` at operating point `x`, so that
-/// `dot(u_eff, x) == dot(u, norm(x))` holds exactly for any additive decomposition of `x`.
-fn linearize_norm(
-    source: &OperandSource<'_>,
-    norm: &NormOp,
-    x: &[f32],
-    u: &[f32],
-) -> Result<Vec<f32>, VindexError> {
-    let w = source.load(&norm.weight)?;
-    let n = x.len();
-    if w.len() != n || u.len() != n {
-        return Err(VindexError::Parse(format!(
-            "norm `{}` width mismatch: x={}, w={}, u={}",
-            norm.weight.tensor,
-            n,
-            w.len(),
-            u.len()
-        )));
-    }
-    let inv_n = 1.0f64 / (n as f64);
-    match norm.kind {
-        NormType::RmsNorm => {
-            let mean_sq: f64 = x.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>() * inv_n;
-            let inv_rms = 1.0f64 / (mean_sq + norm.eps).sqrt();
-            let offset = norm.weight_offset as f64;
-            Ok(u.iter()
-                .zip(w.iter())
-                .map(|(&ui, &wi)| ((ui as f64) * ((wi as f64) + offset) * inv_rms) as f32)
-                .collect())
-        }
-        NormType::LayerNorm => {
-            let mean: f64 = x.iter().map(|&v| v as f64).sum::<f64>() * inv_n;
-            let var: f64 = x
-                .iter()
-                .map(|&v| {
-                    let d = (v as f64) - mean;
-                    d * d
-                })
-                .sum::<f64>()
-                * inv_n;
-            let inv_std = 1.0f64 / (var + norm.eps).sqrt();
-            let offset = norm.weight_offset as f64;
-            let uw: Vec<f64> = u
-                .iter()
-                .zip(w.iter())
-                .map(|(&ui, &wi)| (ui as f64) * ((wi as f64) + offset) * inv_std)
-                .collect();
-            let mean_uw: f64 = uw.iter().sum::<f64>() * inv_n;
-            Ok(uw.into_iter().map(|v| (v - mean_uw) as f32).collect())
-        }
-    }
-}
-
-/// Read exactly two rows (`row_a`, `row_b`) of a `[vocab, hidden]` matrix. Uses `load_raw_range`
-/// on unpatched float tensors (4 KB instead of 250+ MB) and falls back to `source.load` when
-/// patched, overridden, or stored in a packed quantised codec.
-fn load_two_rows(
-    source: &OperandSource<'_>,
-    operand: &OperandRef,
-    row_a: usize,
-    row_b: usize,
-    vocab: usize,
-    hidden: usize,
-) -> Result<(Vec<f32>, Vec<f32>), VindexError> {
-    if !source.is_overridden(operand) && !source.is_patched(operand) {
-        if let Some(dtype) = source.stored_dtype(operand) {
-            let elem_bytes: Option<usize> = match dtype {
-                "BF16" | "F16" => Some(2),
-                "F32" => Some(4),
-                _ => None,
-            };
-            if let Some(eb) = elem_bytes {
-                let row_bytes = (hidden * eb) as u64;
-                let total_bytes = (vocab as u64) * row_bytes;
-                let store = source.store();
-                let raw_a = store.load_raw_range(
-                    operand,
-                    total_bytes,
-                    (row_a as u64) * row_bytes,
-                    row_bytes,
-                )?;
-                let raw_b = store.load_raw_range(
-                    operand,
-                    total_bytes,
-                    (row_b as u64) * row_bytes,
-                    row_bytes,
-                )?;
-                return Ok((
-                    widen_float_row(&raw_a.dtype, &raw_a.bytes)?,
-                    widen_float_row(&raw_b.dtype, &raw_b.bytes)?,
+        if !report.top_heads.is_empty() {
+            out.push(String::new());
+            out.push(format!(
+                "Top {} attention heads (across {} softmax layer(s)):",
+                report.top_heads.len(),
+                report.softmax_layers_attributed
+            ));
+            out.push(format!(
+                "  {:>4}  {:<6} {:<6} {:>10} {:>10}",
+                "Rank", "Layer", "Head", "||h_out||", "Head DLA"
+            ));
+            out.push(format!("  {}", "-".repeat(42)));
+            for (i, h) in report.top_heads.iter().enumerate() {
+                out.push(format!(
+                    "  {:>4}  L{:<5} H{:02}    {:>10.4} {:>+10.4}",
+                    i + 1,
+                    h.layer,
+                    h.head,
+                    h.head_norm,
+                    h.contribution
                 ));
             }
         }
-    }
-    let full = source.load(operand)?;
-    let start_a = row_a * hidden;
-    let start_b = row_b * hidden;
-    Ok((
-        full[start_a..start_a + hidden].to_vec(),
-        full[start_b..start_b + hidden].to_vec(),
-    ))
-}
 
-fn widen_float_row(dtype: &str, bytes: &[u8]) -> Result<Vec<f32>, VindexError> {
-    match dtype {
-        "F32" => Ok(bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect()),
-        "BF16" => Ok(bytes
-            .chunks_exact(2)
-            .map(|c| f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16))
-            .collect()),
-        "F16" => Ok(larql_models::quant::half::decode_f16(bytes)),
-        other => Err(VindexError::Parse(format!(
-            "unsupported float row dtype `{other}`"
-        ))),
+        out.push(format!("  {:.0}ms", report.elapsed_ms));
+        Ok(out)
     }
 }

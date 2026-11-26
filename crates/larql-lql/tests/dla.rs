@@ -215,6 +215,8 @@ fn parses_all_dla_forms() {
         r#"DLA "[1] [2]" FOR "[5]" VS "[6]" AT LAYER 1 TOP 4;"#,
         r#"DLA "[1] [2]" FOR "[5]" VS "[6]" AT LAYERS (0, 2, 3) TOP 6 COLUMNS;"#,
         r#"DLA "[1] [2]" FOR "[5]" VS "[6]" LAYERS ALL TOP 3 COLUMNS;"#,
+        r#"DLA "[1] [2]" FOR "[5]" VS "[6]" AT LAYERS (1, 3) TOP 4 HEADS;"#,
+        r#"DLA "[1] [2]" FOR "[5]" VS "[6]" LAYERS 0-3 TOP 6 COLUMNS TOP 4 HEADS;"#,
     ] {
         let stmt = parse(src).unwrap_or_else(|e| panic!("parse {src}: {e}"));
         assert!(matches!(stmt, Statement::Dla { .. }), "{stmt:?}");
@@ -225,10 +227,19 @@ fn parses_all_dla_forms() {
 fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
     let (_dir, mut session) = lfm3_session();
 
-    // Ask for all columns across all 4 layers (4 * 24 = 96 total).
+    // Ask for all columns across all 4 layers (4 * 24 = 96 total) AND all heads across the 2 softmax layers (2 * 4 = 8).
     let report = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(200))
-        .expect("DLA on hybrid ShortConv + Softmax with sandwich post_ffn_norm");
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(200),
+            Some(100),
+        )
+        .expect(
+            "DLA on hybrid ShortConv + Softmax with sandwich post_ffn_norm and post_operator_norm",
+        );
 
     assert_eq!(report.layers.len(), 4);
     assert_eq!(report.layers[0].mixer, "short-conv");
@@ -236,6 +247,8 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
     assert_eq!(report.layers[2].mixer, "short-conv");
     assert_eq!(report.layers[3].mixer, "full");
     assert_eq!(report.dense_ffn_layers_attributed, 4);
+    assert_eq!(report.softmax_layers_attributed, 2);
+    assert_eq!(report.top_heads.len(), 2 * Q_HEADS);
 
     // Exact additive identity across the stack: emb + sum(op + ffn) == pre_softcap_diff == exact_logit_diff.
     assert!(
@@ -262,7 +275,31 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
         );
     }
 
-    // Columns are ranked strictly by |contribution| descending.
+    // Exact additive identity at the attention-head level through sandwich post_operator_norm
+    // and per-head sigmoid output_gate: sum_h head_dla[l, h] == operator_dla[l] for every softmax layer!
+    for &softmax_layer in &[1usize, 3usize] {
+        let head_sum: f32 = report
+            .top_heads
+            .iter()
+            .filter(|h| h.layer == softmax_layer)
+            .map(|h| h.contribution)
+            .sum();
+        let op_dla = report.layers[softmax_layer].operator_dla;
+        assert!(
+            (head_sum - op_dla).abs() < 1e-3,
+            "layer {softmax_layer}: head DLA sum {head_sum} must match operator_dla {op_dla}"
+        );
+    }
+
+    // Heads and columns are ranked strictly by |contribution| descending.
+    for w in report.top_heads.windows(2) {
+        assert!(
+            w[0].contribution.abs() >= w[1].contribution.abs(),
+            "heads not sorted by |contribution|: {:?} vs {:?}",
+            w[0],
+            w[1]
+        );
+    }
     for w in report.top_columns.windows(2) {
         assert!(
             w[0].contribution.abs() >= w[1].contribution.abs(),
@@ -272,10 +309,10 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
         );
     }
 
-    // Statement execution formats cleanly.
+    // Statement execution formats cleanly with both columns and heads.
     let lines = session
         .execute(
-            &parse(r#"DLA "[3] [7] [11] [15]" FOR "[5]" VS "[12]" LAYERS 0-3 TOP 5 COLUMNS;"#)
+            &parse(r#"DLA "[3] [7] [11] [15]" FOR "[5]" VS "[12]" LAYERS 0-3 TOP 5 COLUMNS TOP 4 HEADS;"#)
                 .unwrap(),
         )
         .unwrap();
@@ -283,13 +320,14 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
     assert!(text.contains("Direct Logit Attribution"), "{text}");
     assert!(text.contains("short-conv"), "{text}");
     assert!(text.contains("Top 5 FFN columns"), "{text}");
+    assert!(text.contains("Top 4 attention heads"), "{text}");
 }
 
 #[test]
 fn dla_executes_live_patched_weights_and_reverts_on_discard() {
     let (_dir, mut session) = lfm3_session();
     let base = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10))
+        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(4))
         .unwrap();
     assert!(!base.executes_patched);
 
@@ -297,7 +335,7 @@ fn dla_executes_live_patched_weights_and_reverts_on_discard() {
     session.execute(&parse(stage).unwrap()).unwrap();
 
     let patched = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10))
+        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(4))
         .unwrap();
     assert!(patched.executes_patched);
     assert_ne!(
@@ -316,7 +354,7 @@ fn dla_executes_live_patched_weights_and_reverts_on_discard() {
         .execute(&parse("DISCARD WEIGHT EDITS;").unwrap())
         .unwrap();
     let restored = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10))
+        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(4))
         .unwrap();
     assert!(!restored.executes_patched);
     assert_eq!(
@@ -329,13 +367,13 @@ fn dla_executes_live_patched_weights_and_reverts_on_discard() {
 fn dla_refuses_multi_token_targets_and_bad_layers() {
     let (_dir, mut session) = lfm3_session();
     let err = session
-        .dla("[3] [7]", "[5] [6]", "[12]", None, None)
+        .dla("[3] [7]", "[5] [6]", "[12]", None, None, None)
         .unwrap_err()
         .to_string();
     assert!(err.contains("exactly 1 token"), "{err}");
 
     let err = session
-        .dla("[3] [7]", "[5]", "", None, None)
+        .dla("[3] [7]", "[5]", "", None, None, None)
         .unwrap_err()
         .to_string();
     assert!(err.contains("exactly 1 token"), "{err}");
@@ -348,6 +386,12 @@ fn dla_refuses_multi_token_targets_and_bad_layers() {
 
     let err = session
         .execute(&parse(r#"DLA "[3] [7]" FOR "[5]" VS "[12]" TOP 0 COLUMNS;"#).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("at least 1"), "{err}");
+
+    let err = session
+        .execute(&parse(r#"DLA "[3] [7]" FOR "[5]" VS "[12]" TOP 0 HEADS;"#).unwrap())
         .unwrap_err()
         .to_string();
     assert!(err.contains("at least 1"), "{err}");

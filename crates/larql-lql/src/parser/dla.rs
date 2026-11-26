@@ -31,6 +31,7 @@ impl Parser {
 
         let mut layers: Option<CaptureLayers> = None;
         let mut top_columns: Option<u32> = None;
+        let mut top_heads: Option<u32> = None;
 
         loop {
             if self.check_keyword(Keyword::At) {
@@ -49,15 +50,25 @@ impl Parser {
                 self.advance();
                 layers = self.parse_dla_layer_spec()?;
             } else if self.check_keyword(Keyword::Top) {
-                if top_columns.is_some() {
-                    return Err(ParseError("DLA: TOP specified more than once".into()));
-                }
                 self.advance();
                 let k = self.expect_u32()?;
-                if is_word(&self.peek(), "COLUMNS") || is_word(&self.peek(), "COLUMN") {
+                if is_word(&self.peek(), "HEADS") || is_word(&self.peek(), "HEAD") {
                     self.advance();
+                    if top_heads.is_some() {
+                        return Err(ParseError("DLA: TOP HEADS specified more than once".into()));
+                    }
+                    top_heads = Some(k);
+                } else {
+                    if is_word(&self.peek(), "COLUMNS") || is_word(&self.peek(), "COLUMN") {
+                        self.advance();
+                    }
+                    if top_columns.is_some() {
+                        return Err(ParseError(
+                            "DLA: TOP COLUMNS specified more than once".into(),
+                        ));
+                    }
+                    top_columns = Some(k);
                 }
-                top_columns = Some(k);
             } else {
                 break;
             }
@@ -70,6 +81,7 @@ impl Parser {
             target_b,
             layers,
             top_columns,
+            top_heads,
         })
     }
 

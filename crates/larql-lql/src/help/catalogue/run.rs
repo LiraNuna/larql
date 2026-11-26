@@ -210,7 +210,7 @@ pub(super) static DLA: StatementHelp = StatementHelp {
     aliases: &[],
     group: HelpGroup::Run,
     syntax: &[
-        "DLA \"<prompt>\" FOR \"<token_a>\" VS \"<token_b>\" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (<n>, ...)] [TOP <k> [COLUMNS]];",
+        "DLA \"<prompt>\" FOR \"<token_a>\" VS \"<token_b>\" [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (<n>, ...)] [TOP <k> [COLUMNS]] [TOP <m> HEADS];",
     ],
     does: &[
         "Computes exact Direct Logit Attribution for logit(token_a) - logit(token_b) at the prompt's",
@@ -220,11 +220,13 @@ pub(super) static DLA: StatementHelp = StatementHelp {
         "With TOP <k> COLUMNS, also linearizes each dense FFN's post-FFN norm (and residual/layer scale)",
         "to attribute each layer's FFN contribution down to individual W_down columns and prints the",
         "top <k> columns ranked by |Col DLA| across the requested layers.",
+        "With TOP <m> HEADS, linearizes each softmax layer's post-attention norm and slices o_proj by",
+        "head to rank the top <m> attention heads by |Head DLA| across the requested softmax layers.",
     ],
     examples: &[
         "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\";",
         "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" LAYERS 0-23 TOP 12 COLUMNS;",
-        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" AT LAYERS (20, 22, 23) TOP 8 COLUMNS;",
+        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" AT LAYERS (20, 22) TOP 8 HEADS;",
     ],
     needs: &[Need::Vindex3, Need::Tokenizer],
     effect: &[
