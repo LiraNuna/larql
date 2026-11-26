@@ -8,6 +8,7 @@ mod parity;
 mod parsing;
 mod refusals;
 mod shapes;
+mod short_conv;
 mod sidecar;
 mod support;
 mod typed;

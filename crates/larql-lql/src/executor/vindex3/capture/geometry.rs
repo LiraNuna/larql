@@ -5,6 +5,7 @@
 use crate::ast::CaptureSite;
 use crate::error::LqlError;
 use crate::executor::{Backend, Session};
+use larql_vindex::format::vindex3::opplan::LayerAttention;
 
 /// The plan's bounds on one capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +57,19 @@ impl Session {
                         .and_then(|layer| layer.ffn.as_ref())
                         .and_then(|ffn| ffn.dense())
                         .map(|dense| dense.intermediate_size)
+                })
+                .collect::<Option<Vec<_>>>()
+                .and_then(|sizes| sizes.into_iter().max()),
+            CaptureSite::ShortConvGateB
+            | CaptureSite::ShortConvGateC
+            | CaptureSite::ShortConvConvOut
+            | CaptureSite::ShortConvGatedY => layers
+                .iter()
+                .map(|&l| {
+                    plan.layers.get(l).and_then(|layer| match &layer.attention {
+                        LayerAttention::ShortConv(op) => Some(op.hidden_size),
+                        _ => None,
+                    })
                 })
                 .collect::<Option<Vec<_>>>()
                 .and_then(|sizes| sizes.into_iter().max()),

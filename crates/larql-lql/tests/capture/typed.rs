@@ -492,6 +492,26 @@ fn capture_geometry_is_the_width_every_site_captures() {
         let geometry = s.capture_geometry(site, &listed).unwrap();
         assert_eq!(geometry.plan_layers, LAYERS);
         assert_eq!(geometry.vocab, Some(VOCAB));
+        if site.is_short_conv() {
+            // Softmax-only fixture: geometry bounds nothing and capture refuses fail-closed.
+            assert_eq!(geometry.width, None, "{}", site.name());
+            let err = s
+                .capture(&CaptureSpec {
+                    site,
+                    layers: layers.as_ref(),
+                    prompt: PROMPT,
+                    continuation: None,
+                    positions: &CapturePositions::Last,
+                })
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("needs a ShortConv layer"),
+                "{}: {err}",
+                site.name()
+            );
+            continue;
+        }
         let captured = s
             .capture(&CaptureSpec {
                 site,

@@ -14,6 +14,14 @@ pub enum CaptureSite {
     FfnDownInput,
     /// The output of the FFN's down projection, before any post-FFN norm or residual scale.
     FfnDownOutput,
+    /// `ShortConv` input gate `B` (width `hidden_size`).
+    ShortConvGateB,
+    /// `ShortConv` output gate `C` (width `hidden_size`).
+    ShortConvGateC,
+    /// `ShortConv` causal depthwise conv1d output `conv(B * x)` (width `hidden_size`).
+    ShortConvConvOut,
+    /// `ShortConv` output-gated pre-`out_proj` activation `C * conv(B * x)` (width `hidden_size`).
+    ShortConvGatedY,
     /// The final-normed hidden state: what the output head reads.
     Final,
     /// The output head's logits over the whole vocabulary.
@@ -22,9 +30,13 @@ pub enum CaptureSite {
 
 impl CaptureSite {
     /// Every site, in forward order.
-    pub const ALL: [CaptureSite; 7] = [
+    pub const ALL: [CaptureSite; 11] = [
         CaptureSite::Residual,
         CaptureSite::PostAttention,
+        CaptureSite::ShortConvGateB,
+        CaptureSite::ShortConvGateC,
+        CaptureSite::ShortConvConvOut,
+        CaptureSite::ShortConvGatedY,
         CaptureSite::FfnInput,
         CaptureSite::FfnDownInput,
         CaptureSite::FfnDownOutput,
@@ -37,6 +49,10 @@ impl CaptureSite {
         match self {
             CaptureSite::Residual => "residual",
             CaptureSite::PostAttention => "post_attention",
+            CaptureSite::ShortConvGateB => "short_conv.gate_b",
+            CaptureSite::ShortConvGateC => "short_conv.gate_c",
+            CaptureSite::ShortConvConvOut => "short_conv.conv_out",
+            CaptureSite::ShortConvGatedY => "short_conv.gated_y",
             CaptureSite::FfnInput => "ffn.input",
             CaptureSite::FfnDownInput => "ffn.down_input",
             CaptureSite::FfnDownOutput => "ffn.down_output",
@@ -55,6 +71,17 @@ impl CaptureSite {
     /// Whether the site is inside a layer, so a capture of it names the layer.
     pub fn per_layer(self) -> bool {
         !matches!(self, CaptureSite::Final | CaptureSite::Logits)
+    }
+
+    /// Whether the site captures an internal signal of a `ShortConv` layer.
+    pub fn is_short_conv(self) -> bool {
+        matches!(
+            self,
+            CaptureSite::ShortConvGateB
+                | CaptureSite::ShortConvGateC
+                | CaptureSite::ShortConvConvOut
+                | CaptureSite::ShortConvGatedY
+        )
     }
 }
 

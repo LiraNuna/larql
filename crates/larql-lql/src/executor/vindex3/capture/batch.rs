@@ -54,7 +54,12 @@ impl PassSite {
             CaptureSite::FfnInput => Some(Self::Layer(LayerPlane::FfnInput)),
             CaptureSite::Final => Some(Self::Exit(ExitValue::Hidden)),
             CaptureSite::Logits => Some(Self::Exit(ExitValue::Logits)),
-            CaptureSite::FfnDownInput | CaptureSite::FfnDownOutput => None,
+            CaptureSite::FfnDownInput
+            | CaptureSite::FfnDownOutput
+            | CaptureSite::ShortConvGateB
+            | CaptureSite::ShortConvGateC
+            | CaptureSite::ShortConvConvOut
+            | CaptureSite::ShortConvGatedY => None,
         }
     }
 }

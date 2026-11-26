@@ -39,7 +39,7 @@ type Case = (
 
 #[test]
 fn every_clause_in_any_case() {
-    let cases: [Case; 6] = [
+    let cases: [Case; 10] = [
         (
             r#"capture ffn.down_input at layers (3, 1) for "p" continue " Paris" positions reply to "a.npy""#,
             CaptureSite::FfnDownInput,
@@ -81,6 +81,34 @@ fn every_clause_in_any_case() {
             Some(CaptureLayers::One(1)),
             None,
             CapturePositions::Last,
+        ),
+        (
+            r#"CAPTURE short_conv.gate_b AT LAYER 0 FOR "p" POSITIONS ALL TO "a.npy";"#,
+            CaptureSite::ShortConvGateB,
+            Some(CaptureLayers::One(0)),
+            None,
+            CapturePositions::All,
+        ),
+        (
+            r#"CAPTURE SHORT_CONV.GATE_C AT LAYERS (0, 2) FOR "p" TO "a.npy";"#,
+            CaptureSite::ShortConvGateC,
+            Some(CaptureLayers::Many(vec![0, 2])),
+            None,
+            CapturePositions::Last,
+        ),
+        (
+            r#"CAPTURE short_conv.conv_out AT LAYER 2 FOR "p" TO "a.npy";"#,
+            CaptureSite::ShortConvConvOut,
+            Some(CaptureLayers::One(2)),
+            None,
+            CapturePositions::Last,
+        ),
+        (
+            r#"CAPTURE short_conv.gated_y AT LAYER 0 FOR "p" POSITIONS PROMPT_END TO "a.npy";"#,
+            CaptureSite::ShortConvGatedY,
+            Some(CaptureLayers::One(0)),
+            None,
+            CapturePositions::PromptEnd,
         ),
     ];
     for (text, want_site, want_layers, want_continuation, want_positions) in cases {

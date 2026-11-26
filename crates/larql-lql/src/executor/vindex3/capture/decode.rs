@@ -11,7 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use larql_inference::vindex3::{OperandOverrides, SelectedContinuation};
 use larql_vindex::format::vindex3::opplan::exec::down_input_capture::DownInputCapture;
-use larql_vindex::format::vindex3::opplan::exec::observe::{InputSite, StepEvent, StepObserver};
+use larql_vindex::format::vindex3::opplan::exec::observe::{
+    InputSite, ShortConvRecord, StepEvent, StepObserver,
+};
+use larql_vindex::format::vindex3::opplan::LayerAttention;
 
 use super::super::{confirm_patched_weights_ran, V3Runtime};
 use super::{batch, refused, Rows};
@@ -24,10 +27,32 @@ pub(super) struct DecodeCapture {
     pub ffn_input_matches_infer_pass: bool,
 }
 
+/// Which internal `ShortConv` signal to copy from [`ShortConvRecord`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShortConvField {
+    GateB,
+    GateC,
+    ConvOut,
+    GatedY,
+}
+
+impl ShortConvField {
+    fn of(site: CaptureSite) -> Option<Self> {
+        match site {
+            CaptureSite::ShortConvGateB => Some(Self::GateB),
+            CaptureSite::ShortConvGateC => Some(Self::GateC),
+            CaptureSite::ShortConvConvOut => Some(Self::ConvOut),
+            CaptureSite::ShortConvGatedY => Some(Self::GatedY),
+            _ => None,
+        }
+    }
+}
+
 /// Records the requested sublayer values at the requested `(layer, position)` pairs.
 struct Tap {
     down: Option<DownInputCapture>,
     want_output: bool,
+    short_conv: Option<ShortConvField>,
     layers: BTreeSet<usize>,
     positions: BTreeSet<usize>,
     position: Option<usize>,
@@ -61,6 +86,33 @@ impl StepObserver for Tap {
         if let Some(down) = &mut self.down {
             down.observe_down_input(layer, values);
         }
+    }
+
+    fn wants_short_conv(&self) -> bool {
+        self.short_conv.is_some()
+    }
+
+    fn wants_short_conv_at(&self, layer: usize, position: usize) -> bool {
+        self.short_conv.is_some()
+            && self.layers.contains(&layer)
+            && self.positions.contains(&position)
+    }
+
+    fn short_conv(&mut self, record: ShortConvRecord<'_>) {
+        let Some(field) = self.short_conv else {
+            return;
+        };
+        if !self.layers.contains(&record.layer) || !self.positions.contains(&record.position) {
+            return;
+        }
+        let values = match field {
+            ShortConvField::GateB => record.gate_b,
+            ShortConvField::GateC => record.gate_c,
+            ShortConvField::ConvOut => record.conv_out,
+            ShortConvField::GatedY => record.gated_y,
+        };
+        self.outputs
+            .insert((record.layer, record.position), values.to_vec());
     }
 
     fn operand_input(&mut self, layer: usize, site: InputSite, values: &[f32]) {
@@ -103,12 +155,27 @@ pub(super) fn capture(
             )));
         }
     }
+    let short_conv = ShortConvField::of(site);
+    if short_conv.is_some() {
+        if let Some(&layer) = layers.iter().find(|&&l| {
+            !matches!(
+                runtime.plan().layers[l].attention,
+                LayerAttention::ShortConv(_)
+            )
+        }) {
+            return Err(refused(format!(
+                "{} at layer {layer} needs a ShortConv layer: this layer's mixer is not ShortConv",
+                site.name()
+            )));
+        }
+    }
     let addresses = layers
         .iter()
         .flat_map(|&l| positions.iter().map(move |&p| (l, p)));
     let mut tap = Tap {
         down: (site == CaptureSite::FfnDownInput).then(|| DownInputCapture::at(addresses)),
         want_output: site == CaptureSite::FfnDownOutput,
+        short_conv,
         layers: layers.iter().copied().collect(),
         positions: positions.iter().copied().collect(),
         position: None,
