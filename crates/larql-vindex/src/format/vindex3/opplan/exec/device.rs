@@ -548,29 +548,10 @@ impl<M: MatMul + Send> PlanBackend for DevicePlanBackend<M> {
         let mut out = Vec::with_capacity(aggregated.len());
         for (position, mut concat) in aggregated.into_iter().enumerate() {
             if let Some(GateCall { spec, weight }) = &call.gate {
-                // Exhaustive on the judged semantics (see attend_position).
-                // A fused query/gate projection needs the device
-                // projection to emit `2 · head_dim` per head and gather
-                // the halves; that is a kernel change, and this rung does
-                // not touch Metal. Refused rather than silently gated
-                // from the wrong rows.
-                match spec.source {
-                    GateSource::AttentionInput => {}
-                    GateSource::FusedQueryProjection => {
-                        return Err(VindexError::Parse(
-                            super::device_refusal::fused_query_gate_projection_refusal(),
-                        ))
-                    }
-                }
-                let GateActivation::Sigmoid = spec.activation;
-                let GateCombine::ElementwiseMultiply = spec.combine;
-                let GatePlacement::AfterAggregationBeforeOutputProjection = spec.placement;
-                let q_rows = call.num_q_heads * call.head_dim;
+                let gate_rows = output_gate_rows(spec.granularity, call.num_q_heads, call.head_dim);
                 let gate_values =
-                    self.gemv(*weight, q_rows, call.hidden, &call.inputs[position])?;
-                for (c, g) in concat.iter_mut().zip(&gate_values) {
-                    *c *= 1.0 / (1.0 + (-g).exp());
-                }
+                    self.gemv(*weight, gate_rows, call.hidden, &call.inputs[position])?;
+                apply_output_gate(spec, &mut concat, &gate_values, call.head_dim)?;
             }
             let mut projected = self.gemv(
                 call.w_o,
@@ -602,8 +583,12 @@ impl<M: MatMul + Send> PlanBackend for DevicePlanBackend<M> {
             (call.w_k, kv_rows, call.hidden),
             (call.w_v, kv_rows, call.hidden),
         ];
-        if let Some(GateCall { weight, .. }) = &call.gate {
-            mats.push((*weight, q_rows, call.hidden));
+        if let Some(GateCall { spec, weight }) = &call.gate {
+            mats.push((
+                *weight,
+                output_gate_rows(spec.granularity, call.num_q_heads, call.head_dim),
+                call.hidden,
+            ));
         }
         let mut projected = self.gemv_multi(&mats, pre)?;
         let gate_values = call
@@ -636,24 +621,8 @@ impl<M: MatMul + Send> PlanBackend for DevicePlanBackend<M> {
             },
         );
         if let Some(GateCall { spec, .. }) = &call.gate {
-            // Exhaustive on the judged semantics, like both CPU
-            // backends: a new variant must be implemented here before
-            // it can execute on the device.
-            match spec.source {
-                GateSource::AttentionInput => {}
-                GateSource::FusedQueryProjection => {
-                    return Err(VindexError::Parse(
-                        super::device_refusal::fused_query_gate_projection_refusal(),
-                    ))
-                }
-            }
-            let GateActivation::Sigmoid = spec.activation;
-            let GateCombine::ElementwiseMultiply = spec.combine;
-            let GatePlacement::AfterAggregationBeforeOutputProjection = spec.placement;
             let gate_values = gate_values.expect("projected alongside QKV above");
-            for (c, g) in concat.iter_mut().zip(&gate_values) {
-                *c *= 1.0 / (1.0 + (-g).exp());
-            }
+            apply_output_gate(spec, &mut concat, &gate_values, call.head_dim)?;
         }
         let mut output = self.gemv(call.w_o, call.hidden, q_rows, &concat)?;
         add_output_bias(call, &mut output);
@@ -779,4 +748,50 @@ impl<M: MatMul + Send> PlanBackend for DevicePlanBackend<M> {
     fn residual_add(&self, acc: &mut [f32], delta: &[f32]) {
         self.glue.residual_add(acc, delta);
     }
+}
+
+fn output_gate_rows(
+    granularity: larql_models::config::GateGranularity,
+    num_q_heads: usize,
+    head_dim: usize,
+) -> usize {
+    match granularity {
+        larql_models::config::GateGranularity::PerHead => num_q_heads,
+        larql_models::config::GateGranularity::PerElement => num_q_heads * head_dim,
+    }
+}
+
+fn apply_output_gate(
+    spec: &larql_models::config::AttentionGateSpec,
+    concat: &mut [f32],
+    gate_values: &[f32],
+    head_dim: usize,
+) -> Result<(), VindexError> {
+    match spec.source {
+        GateSource::AttentionInput => {}
+        GateSource::FusedQueryProjection => {
+            return Err(VindexError::Parse(
+                super::device_refusal::fused_query_gate_projection_refusal(),
+            ))
+        }
+    }
+    let GateActivation::Sigmoid = spec.activation;
+    let GateCombine::ElementwiseMultiply = spec.combine;
+    let GatePlacement::AfterAggregationBeforeOutputProjection = spec.placement;
+    match spec.granularity {
+        larql_models::config::GateGranularity::PerHead => {
+            for (head_slice, &g) in concat.chunks_exact_mut(head_dim).zip(gate_values) {
+                let factor = 1.0 / (1.0 + (-g).exp());
+                for c in head_slice {
+                    *c *= factor;
+                }
+            }
+        }
+        larql_models::config::GateGranularity::PerElement => {
+            for (c, g) in concat.iter_mut().zip(gate_values) {
+                *c *= 1.0 / (1.0 + (-g).exp());
+            }
+        }
+    }
+    Ok(())
 }

@@ -362,6 +362,7 @@ pub fn resolve_with_tensor_evidence(
         conv_qkv_attn: cfg.conv_qkv_attn,
         conv_qkv_provenance: cfg.conv_qkv_provenance.clone(),
         pad_vocab_size_multiple: cfg.pad_vocab_size_multiple,
+        short_conv: arch.short_conv_geometry(),
     };
     let mut topology = topology;
     resolve_vocab_size_from_embedding_rows(&mut topology, arch.as_ref(), tensors);
@@ -492,10 +493,11 @@ pub fn bind_expert_banks(topology: &mut ResolvedTopology, tensors: &[super::repo
 /// consumer already speaks, so a new spelling reaches them without each
 /// growing a second code path.
 fn layer_kind_spelling(kind: &crate::config::LayerKind) -> String {
-    use crate::config::LayerKind;
+    use crate::config::{LayerKind, RecurrenceFamily};
     match kind {
         LayerKind::Full => crate::config::LAYER_TYPE_FULL_ATTENTION,
         LayerKind::Sliding { .. } => crate::config::LAYER_TYPE_SLIDING_ATTENTION,
+        LayerKind::Recurrent(RecurrenceFamily::ShortConv) => crate::config::LAYER_TYPE_CONV,
         LayerKind::Recurrent(_) => crate::config::LAYER_TYPE_LINEAR_ATTENTION,
         // Carried verbatim, so the report shows what the checkpoint
         // actually said and the layer fails to round-trip to anything

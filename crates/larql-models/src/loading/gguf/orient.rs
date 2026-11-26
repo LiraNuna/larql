@@ -402,6 +402,9 @@ fn synth_gpt2_config(
         mtp_use_dedicated_embeddings: None,
         mrope_interleaved: None,
         mrope_section: None,
+        conv_l_cache: None,
+        conv_bias: None,
+        use_sandwich_norm: None,
     }
 }
 

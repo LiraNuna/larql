@@ -2,7 +2,7 @@
 
 use super::super::super::conv_qkv::ConvQkvOp;
 use super::super::super::KdaOutputGate;
-use super::super::super::{KdaOp, Mamba2Op, OperandRef};
+use super::super::super::{KdaOp, Mamba2Op, OperandRef, ShortConvOp};
 use super::super::accounting::Bound;
 use super::super::kda::KdaOutputGateWeights;
 use super::super::operands::OperandSource;
@@ -138,6 +138,69 @@ impl ConvQkvOperands {
             out_proj: matrix_rows(&self.out_proj, &self.op.out_proj)?,
             conv1d: &self.conv1d,
             conv1d_bias: self.conv1d_bias.as_deref(),
+        })
+    }
+}
+
+/// The resident operands of a ShortConv layer (`in_proj`, `out_proj`, depthwise conv, optional biases).
+pub(in super::super) struct ShortConvOperands {
+    pub(in super::super) op: ShortConvOp,
+    pub(super) in_proj: LoadedWeight,
+    pub(super) in_proj_bias: Option<Vec<f32>>,
+    pub(super) conv_weight: Vec<f32>,
+    pub(super) conv_bias: Option<Vec<f32>>,
+    pub(super) out_proj: LoadedWeight,
+    pub(super) out_proj_bias: Option<Vec<f32>>,
+}
+
+impl ShortConvOperands {
+    pub(in super::super) fn bound<'a>(&'a self, op: &'a ShortConvOp) -> Vec<Bound<'a>> {
+        vec![
+            Bound::one(&op.in_proj, &self.in_proj),
+            Bound::one(&op.out_proj, &self.out_proj),
+        ]
+    }
+
+    pub(super) fn load(
+        op: &ShortConvOp,
+        store: OperandSource<'_>,
+        format: FormatFor<'_>,
+    ) -> Result<Self, VindexError> {
+        let matrix = |r: &OperandRef| load_weight(store, r, format(r)?);
+        let glue = |r: &OperandRef| store.load(r);
+        Ok(Self {
+            op: op.clone(),
+            in_proj: matrix(&op.in_proj)?,
+            in_proj_bias: op.in_proj_bias.as_ref().map(glue).transpose()?,
+            conv_weight: glue(&op.conv_weight)?,
+            conv_bias: op.conv_bias.as_ref().map(glue).transpose()?,
+            out_proj: matrix(&op.out_proj)?,
+            out_proj_bias: op.out_proj_bias.as_ref().map(glue).transpose()?,
+        })
+    }
+
+    pub(in super::super) fn loaded_matrices(&self) -> [&LoadedWeight; 2] {
+        [&self.in_proj, &self.out_proj]
+    }
+
+    pub(in super::super) fn glue_bytes(&self) -> usize {
+        let opt = |v: &Option<Vec<f32>>| v.as_ref().map_or(0, |v| std::mem::size_of_val(&v[..]));
+        std::mem::size_of_val(&self.conv_weight[..])
+            + opt(&self.in_proj_bias)
+            + opt(&self.conv_bias)
+            + opt(&self.out_proj_bias)
+    }
+
+    pub(in super::super) fn weights(
+        &self,
+    ) -> Result<super::super::short_conv::ShortConvWeights<'_>, VindexError> {
+        Ok(super::super::short_conv::ShortConvWeights {
+            in_proj: matrix_rows(&self.in_proj, &self.op.in_proj)?,
+            in_proj_bias: self.in_proj_bias.as_deref(),
+            conv_weight: &self.conv_weight,
+            conv_bias: self.conv_bias.as_deref(),
+            out_proj: matrix_rows(&self.out_proj, &self.op.out_proj)?,
+            out_proj_bias: self.out_proj_bias.as_deref(),
         })
     }
 }

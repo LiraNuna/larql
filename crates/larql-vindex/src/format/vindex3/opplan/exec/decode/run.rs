@@ -254,6 +254,19 @@ impl<'a, B: PlanBackend> DecodeSession<'a, B> {
                     );
                     planes.output.remove(0)
                 }
+                super::super::prepared::PreparedAttention::ShortConv(sc) => {
+                    let weights = sc.weights()?;
+                    let projector = super::super::dense_rows::consuming_projector(
+                        self.backend.dense_projector(),
+                        &weights,
+                        layer.layer,
+                    )?;
+                    let recurrent = self.kv.state_mut().recurrent_state(index)?;
+                    let mut planes = super::super::short_conv::layer_forward_with(
+                        &sc.op, &weights, &inputs, recurrent, projector,
+                    );
+                    planes.output.remove(0)
+                }
                 super::super::prepared::PreparedAttention::Kda(ops) => {
                     let weights = ops.weights()?;
                     let projector = super::super::dense_rows::consuming_projector(

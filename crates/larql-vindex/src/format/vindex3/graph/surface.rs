@@ -456,6 +456,10 @@ pub struct ExecutionSurface {
     /// partial declarations at the parse boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conv_qkv: Option<larql_models::config::ConvQkvAttnGeometry>,
+    /// What the short gated depthwise-conv1d operator reads, on a component
+    /// whose layers run `LayerOperator::ShortConv`. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_conv: Option<larql_models::config::ShortConvGeometry>,
     /// Whether the residual stream is kept at fp32 against a
     /// lower-precision model (`residual_in_fp32`) — declared, never
     /// chosen by an executor. `None` = the checkpoint declares nothing.

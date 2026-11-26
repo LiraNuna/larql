@@ -190,5 +190,17 @@ fn collect_attention(attention: &LayerAttention, roles: &mut PlanRoles) {
                 put(roles, Role::Norm, &n.weight);
             }
         }
+        LayerAttention::ShortConv(s) => {
+            for op in [&s.in_proj, &s.out_proj] {
+                put(roles, Role::RecurrenceProjection, op);
+            }
+            put(roles, Role::SmallVector, &s.conv_weight);
+            for b in [&s.in_proj_bias, &s.conv_bias, &s.out_proj_bias]
+                .into_iter()
+                .flatten()
+            {
+                put(roles, Role::SmallVector, b);
+            }
+        }
     }
 }

@@ -123,6 +123,26 @@ pub(super) fn absent_op(role: OperandRole, ops: &LayerOps) -> Option<&'static st
         {
             Some("MLA (Multi-Latent Attention) — no plain query/key/value/output projection")
         }
+        OperandRole::AttnQ | OperandRole::AttnK | OperandRole::AttnV | OperandRole::AttnO
+            if ops.operator.is_short_conv() =>
+        {
+            Some("ShortConv layer — no softmax query/key/value/output projection")
+        }
+        OperandRole::ShortConvInProj
+        | OperandRole::ShortConvWeight
+        | OperandRole::ShortConvOutProj
+            if !ops.operator.is_short_conv() =>
+        {
+            Some("ShortConv layer (this layer does not run short_conv)")
+        }
+        OperandRole::ShortConvInProjBias
+        | OperandRole::ShortConvBias
+        | OperandRole::ShortConvOutProjBias
+            if !ops.operator.is_short_conv()
+                || !ops.short_conv.is_some_and(|s| s.conv_bias) =>
+        {
+            Some("ShortConv bias (`conv_bias` declares none)")
+        }
         OperandRole::FfnGate if !ops.routed && !ops.gated_ffn => Some("gated FFN"),
         OperandRole::FfnGate | OperandRole::FfnUp | OperandRole::FfnDown
             if ops.routed && !ops.hybrid =>
@@ -223,8 +243,11 @@ pub(super) fn absent_op(role: OperandRole, ops: &LayerOps) -> Option<&'static st
         {
             Some("a scaled expert format (this format carries no separate scales)")
         }
-        OperandRole::PreFfnNorm | OperandRole::PostFfnNorm
-            if ops.placement == NormPlacement::PreOnly =>
+        OperandRole::PostFfnNorm if ops.placement == NormPlacement::PreOnly => {
+            Some("four-norm placement")
+        }
+        OperandRole::PreFfnNorm
+            if ops.placement == NormPlacement::PreOnly && !ops.pre_ffn_explicit =>
         {
             Some("four-norm placement")
         }
@@ -284,6 +307,10 @@ pub(super) struct StackGeometry {
     /// The hybrid's conv-QKV attention geometry, on a component whose
     /// full layers run it.
     pub(super) conv_qkv: Option<larql_models::config::ConvQkvAttnGeometry>,
+    /// Short gated depthwise-conv1d geometry, on a component whose layers run it.
+    pub(super) short_conv: Option<larql_models::config::ShortConvGeometry>,
+    /// Granularity of the softmax attention output gate, when one is declared.
+    pub(super) gate_granularity: Option<larql_models::config::GateGranularity>,
     /// The declared hyper-connection topology, whose stream count sizes
     /// the site operands: `[(2 + hc)·hc, hc·hidden]`, `[(2 + hc)·hc]`,
     /// `[3]`. `None` on a single-stream component, where a site operand

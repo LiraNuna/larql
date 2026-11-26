@@ -114,6 +114,16 @@ pub(super) fn run_ops(args: OpsArgs) -> Result<(), Box<dyn std::error::Error>> {
                             layer_plan.operands_accounted,
                             layer_plan.operands_present,
                         ),
+                        LayerAttention::ShortConv(op) => println!(
+                            "layer {:3}: ShortConv(hidden {}, conv_L_cache {}) state {} elems  \
+                             {}/{} operands accounted",
+                            layer_plan.layer,
+                            op.hidden_size,
+                            op.conv_l_cache,
+                            op.state_elements(),
+                            layer_plan.operands_accounted,
+                            layer_plan.operands_present,
+                        ),
                     }
                 }
             }
@@ -181,6 +191,7 @@ fn print_layer(component: &str, layer: &LayerPlan) {
         LayerAttention::Mla(op) => print_mla(op),
         LayerAttention::Mamba2(op) => print_mamba2(op),
         LayerAttention::ConvQkv(op) => print_conv_qkv(op),
+        LayerAttention::ShortConv(op) => print_short_conv(op),
     }
     println!("  residual");
     if let Some(op) = &layer.post_attention_norm {
@@ -442,6 +453,38 @@ fn print_conv_qkv(op: &larql_vindex::format::vindex3::opplan::conv_qkv::ConvQkvO
         op.geometry.attn_out_width(),
         op.conv1d_bias.is_some(),
     );
+}
+
+fn print_short_conv(op: &larql_vindex::format::vindex3::opplan::ShortConvOp) {
+    println!("  ShortConv (gated causal depthwise conv1d)");
+    println!(
+        "    geometry: hidden {}, conv_L_cache {}, conv_bias: {}",
+        op.hidden_size,
+        op.conv_l_cache,
+        op.conv_bias.is_some(),
+    );
+    println!(
+        "    recurrent state: {} elements (constant in sequence length)",
+        op.state_elements()
+    );
+    println!("    in_proj: {} {:?}", op.in_proj.tensor, op.in_proj.shape);
+    if let Some(b) = &op.in_proj_bias {
+        println!("    in_proj_bias: {} {:?}", b.tensor, b.shape);
+    }
+    println!(
+        "    conv: {} {:?}",
+        op.conv_weight.tensor, op.conv_weight.shape
+    );
+    if let Some(b) = &op.conv_bias {
+        println!("    conv_bias: {} {:?}", b.tensor, b.shape);
+    }
+    println!(
+        "    out_proj: {} {:?}",
+        op.out_proj.tensor, op.out_proj.shape
+    );
+    if let Some(b) = &op.out_proj_bias {
+        println!("    out_proj_bias: {} {:?}", b.tensor, b.shape);
+    }
 }
 
 fn print_mamba2(op: &larql_vindex::format::vindex3::opplan::Mamba2Op) {

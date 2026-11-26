@@ -50,6 +50,11 @@ pub const LAYER_TYPE_WINDOW_ATTENTION: &str = "window_attention";
 /// for it yet — R2/Kimi-Linear rung, `docs/k3-funnel.md`).
 pub const LAYER_TYPE_LINEAR_ATTENTION: &str = "linear_attention";
 
+/// A layer computing a gated causal depthwise short convolution (`Lfm3ShortConv`)
+/// instead of attention — interleaved with `full_attention` and
+/// `sliding_attention` on LFM3.
+pub const LAYER_TYPE_CONV: &str = "conv";
+
 /// Whether `layer_types` marks `layer` as sliding-window.
 ///
 /// Returns `None` when the config declares no `layer_types`, leaving the

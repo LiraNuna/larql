@@ -40,6 +40,7 @@ pub mod residual_topology;
 pub mod rope;
 pub mod rope_types;
 pub mod shared_expert_gate;
+pub mod short_conv;
 
 pub use activation::{
     ffn_shape_from_hf_name, ffn_shape_hf_name, hf_combine_name, Activation, ActivationDeclaration,
@@ -51,7 +52,7 @@ pub use architecture::{
     LatentAttention, ModelArchitecture, Norms, Position, TensorKeys, UNSCALED_POSITION_DIVISOR,
 };
 pub use attention_gate::{
-    AttentionGateSpec, GateActivation, GateCombine, GatePlacement, GateSource,
+    AttentionGateSpec, GateActivation, GateCombine, GateGranularity, GatePlacement, GateSource,
 };
 pub use attention_sinks::AttentionSinkSpec;
 pub use conv_qkv_attn::{ConvQkvAttnGeometry, ConvQkvDialect, ConvQkvProvenance};
@@ -65,7 +66,7 @@ pub use interleave::{
 };
 pub use latent_moe::{LatentNormSpec, RoutedExpertForm};
 pub use layer_types::{
-    is_full_at_period, LAYER_TYPE_FULL_ATTENTION, LAYER_TYPE_LINEAR_ATTENTION,
+    is_full_at_period, LAYER_TYPE_CONV, LAYER_TYPE_FULL_ATTENTION, LAYER_TYPE_LINEAR_ATTENTION,
     LAYER_TYPE_SLIDING_ATTENTION, LAYER_TYPE_WINDOW_ATTENTION,
 };
 pub use linear_attn::{
@@ -87,6 +88,7 @@ pub use rope_types::{
     ROPE_TYPE_PROPORTIONAL, ROPE_TYPE_YARN,
 };
 pub use shared_expert_gate::{SharedExpertGateSource, SharedExpertGateSpec};
+pub use short_conv::ShortConvGeometry;
 
 #[cfg(test)]
 mod kda_geometry_tests;

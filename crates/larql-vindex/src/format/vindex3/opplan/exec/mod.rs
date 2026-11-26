@@ -86,6 +86,7 @@ pub mod rope_angles;
 pub mod routed_experts;
 pub mod routing_trace;
 pub mod sequence;
+pub mod short_conv;
 pub mod site_capture;
 pub mod source_head;
 pub mod stack;

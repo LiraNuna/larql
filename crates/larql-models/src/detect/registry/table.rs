@@ -18,6 +18,7 @@ use crate::architectures::granite::GraniteArch;
 use crate::architectures::kimi::KimiLinearArch;
 use crate::architectures::kimi_k3::KimiK3Arch;
 use crate::architectures::lfm2::Lfm2Arch;
+use crate::architectures::lfm3::Lfm3Arch;
 use crate::architectures::llama::{LlamaArch, LLAMA_LAYER_BANDS};
 use crate::architectures::mamba2::Mamba2Arch;
 use crate::architectures::mistral::{MistralArch, MISTRAL_LAYER_BANDS};
@@ -188,6 +189,24 @@ pub static ARCHITECTURE_REGISTRY: &[ArchitectureEntry] = &[
         gguf: GgufTranslation::NONE,
         layer_bands: &[],
         chat_format: None,
+    },
+    // LFM3 — hybrid 3-way stack (gated short-conv + sliding attention + full
+    // attention with zero-tail partial RoPE and per-head output gating).
+    // Prefixed so `lfm3`, `lfm3_text`, etc. resolve to Lfm3Arch.
+    ArchitectureEntry {
+        model_type: "lfm3",
+        patterns: &[ModelTypeMatch::Prefix("lfm3")],
+        attention_kind: AttentionKind::Standard,
+        quant_formats: STANDARD_QUANT_FORMATS,
+        components: &[],
+        construct: |c, _| Box::new(Lfm3Arch::from_config(c)),
+        config_defaults: ConfigDefaults {
+            rope_theta: ROPE_BASE_GEMMA,
+            ..ConfigDefaults::STANDARD
+        },
+        gguf: GgufTranslation::NONE,
+        layer_bands: &[],
+        chat_format: Some(ChatFormat::ChatMl),
     },
     ArchitectureEntry {
         model_type: "exaone4",

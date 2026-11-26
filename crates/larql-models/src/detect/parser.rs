@@ -573,6 +573,10 @@ pub(super) fn parse_model_config(config: &serde_json::Value) -> ModelConfig {
                 .collect()
         })
     });
+    // Short-conv mixer parameters and sandwich-norm flag (LFM3).
+    let conv_l_cache = text_config["conv_L_cache"].as_u64().map(|v| v as usize);
+    let conv_bias = text_config["conv_bias"].as_bool();
+    let use_sandwich_norm = text_config["use_sandwich_norm"].as_bool();
 
     ModelConfig {
         model_type,
@@ -700,5 +704,8 @@ pub(super) fn parse_model_config(config: &serde_json::Value) -> ModelConfig {
         mtp_use_dedicated_embeddings,
         mrope_interleaved,
         mrope_section,
+        conv_l_cache,
+        conv_bias,
+        use_sandwich_norm,
     }
 }

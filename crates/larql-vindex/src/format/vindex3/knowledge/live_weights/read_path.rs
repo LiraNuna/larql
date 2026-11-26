@@ -35,7 +35,7 @@ pub fn seam_refusal(plan: &ComponentOpPlan, planned: &PlannedOperand) -> Option<
         Operation::Embed | Operation::OutputHead => None,
         Operation::Project(class) => match class {
             MatrixClass::AttentionProjection => match layer.map(|l| &l.attention) {
-                Some(LayerAttention::Softmax(_)) => None,
+                Some(LayerAttention::Softmax(_) | LayerAttention::ShortConv(_)) => None,
                 Some(
                     LayerAttention::GatedDelta(_)
                     | LayerAttention::Mamba2(_)

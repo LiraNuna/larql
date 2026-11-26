@@ -638,3 +638,34 @@ pub(super) fn probe_full_attention_period(
         .all(|(layer, l)| is_full(l) == larql_models::config::is_full_at_period(layer, period))
         .then(|| json!(period))
 }
+
+/// ShortConv causal convolution width (`conv_L_cache`), read off the built surface.
+pub(super) fn probe_short_conv_l_cache(
+    component: &Component,
+    _ctx: &ProbeContext<'_>,
+) -> Option<Value> {
+    Some(json!(
+        component.execution.as_ref()?.short_conv?.conv_l_cache
+    ))
+}
+
+/// Whether the ShortConv projections and depthwise conv carry additive biases (`conv_bias`).
+pub(super) fn probe_short_conv_bias(
+    component: &Component,
+    _ctx: &ProbeContext<'_>,
+) -> Option<Value> {
+    Some(json!(component.execution.as_ref()?.short_conv?.conv_bias))
+}
+
+/// Whether the stack carries sandwich (pre + post) norms (`use_sandwich_norm`).
+pub(super) fn probe_use_sandwich_norm(
+    component: &Component,
+    _ctx: &ProbeContext<'_>,
+) -> Option<Value> {
+    use super::super::super::graph::NormPlacement;
+    match component.execution.as_ref()?.norm.placement? {
+        NormPlacement::PrePost => Some(json!(true)),
+        NormPlacement::PreOnly => Some(json!(false)),
+        NormPlacement::PostOnly | NormPlacement::PreMixer => None,
+    }
+}

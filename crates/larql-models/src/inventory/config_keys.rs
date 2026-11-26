@@ -283,6 +283,10 @@ pub const CONSUMED_LEAF_KEYS: &[&str] = &[
     "mtp_use_dedicated_embeddings",
     "mrope_interleaved",
     "mrope_section",
+    // Short-conv mixer and sandwich-norm declarations (LFM3).
+    "conv_L_cache",
+    "conv_bias",
+    "use_sandwich_norm",
 ];
 
 /// Containers the parser recurses into: leaves inside keep consumed-leaf

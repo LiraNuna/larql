@@ -416,6 +416,35 @@ fn explain_layer(
                 operands
             },
         },
+        LayerAttention::ShortConv(op) => ExplainAttention {
+            mode: "short-conv".into(),
+            window: None,
+            q_heads: None,
+            kv_heads: None,
+            head_dim: None,
+            state_elements: Some(op.state_elements()),
+            gated: true,
+            qk_norm: false,
+            sinks: false,
+            biased: op.conv_bias.is_some()
+                || op.in_proj_bias.is_some()
+                || op.out_proj_bias.is_some(),
+            operands: {
+                let mut operands = vec![operand("in_proj", &op.in_proj)];
+                if let Some(bias) = &op.in_proj_bias {
+                    operands.push(operand("in_proj_bias", bias));
+                }
+                operands.push(operand("conv", &op.conv_weight));
+                if let Some(bias) = &op.conv_bias {
+                    operands.push(operand("conv_bias", bias));
+                }
+                operands.push(operand("out_proj", &op.out_proj));
+                if let Some(bias) = &op.out_proj_bias {
+                    operands.push(operand("out_proj_bias", bias));
+                }
+                operands
+            },
+        },
     };
 
     let (kind, experts, ffn_operands) = match layer.ffn.as_ref() {

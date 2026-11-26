@@ -209,4 +209,11 @@ pub trait Attention: Position {
             .map(|v| v as f32)
             .unwrap_or(1.0)
     }
+
+    /// Declared geometry of gated short-convolution layers (`Lfm3ShortConv`),
+    /// when this checkpoint uses them. Defaults to reading `conv_L_cache` /
+    /// `conv_bias` from `config.json`.
+    fn short_conv_geometry(&self) -> Option<crate::config::ShortConvGeometry> {
+        crate::config::ShortConvGeometry::from_config(self.config())
+    }
 }

@@ -290,6 +290,7 @@ pub(in super::super) enum PreparedAttention {
     ConvQkv(Box<ConvQkvOperands>),
     Kda(Box<KdaOperands>),
     Mla(Box<MlaOperands>),
+    ShortConv(Box<ShortConvOperands>),
 }
 
 impl PreparedAttention {
@@ -306,6 +307,7 @@ impl PreparedAttention {
             (Self::ConvQkv(ops), LayerAttention::ConvQkv(op)) => ops.bound(op),
             (Self::Kda(ops), LayerAttention::Kda(op)) => ops.bound(op),
             (Self::Mla(ops), LayerAttention::Mla(op)) => ops.bound(op),
+            (Self::ShortConv(ops), LayerAttention::ShortConv(op)) => ops.bound(op),
             _ => {
                 return Err(VindexError::Parse(
                     "the prepared attention and the plan's attention are different programs"
@@ -325,6 +327,7 @@ impl PreparedAttention {
             Self::ConvQkv(ops) => ops.loaded_matrices().to_vec(),
             Self::Kda(ops) => ops.loaded_matrices().to_vec(),
             Self::Mla(ops) => ops.loaded_matrices().to_vec(),
+            Self::ShortConv(ops) => ops.loaded_matrices().to_vec(),
         }
     }
 
@@ -341,7 +344,8 @@ impl PreparedAttention {
             | Self::Mamba2(_)
             | Self::ConvQkv(_)
             | Self::Kda(_)
-            | Self::Mla(_) => Vec::new(),
+            | Self::Mla(_)
+            | Self::ShortConv(_) => Vec::new(),
         }
     }
 }

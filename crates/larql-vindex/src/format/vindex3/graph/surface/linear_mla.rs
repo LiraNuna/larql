@@ -209,6 +209,7 @@ pub fn surface_from_resolved(
             activation: execution.activation,
         }),
         conv_qkv: resolved.conv_qkv_attn,
+        short_conv: resolved.short_conv,
         residual_in_fp32: execution.residual_in_fp32,
         // Absent means this build has not judged what the checkpoint
         // declares. Refusing is still the point — the alternative is a

@@ -11,7 +11,7 @@ use super::super::{
     HyperConnectionHeadOp, HyperConnectionLayerOp, KdaOp, KdaOutputGate, LatentBranchOp,
     LatentNormOp, LayerAttention, LayerFfn, LayerPlan, Mamba2Op, MlaOp, MlaQueryProjection, NormOp,
     OperandRef, OutputOp, PackedProjection, QkNormOp, RoutedFfnOp, SharedExpertBranchGateOp,
-    SharedExpertOp, SinkOp,
+    SharedExpertOp, ShortConvOp, SinkOp,
 };
 use larql_models::config::ExpertFormat;
 use larql_models::config::MoeRouterKind;
@@ -274,7 +274,14 @@ pub(super) fn construct_plan(c: ClosedComponent<'_>) -> ComponentOpPlan {
                     Some(norm_op(spec, &stack_id, get(OperandRole::PostFfnNorm))),
                 )
             }
-            NormPlacement::PreOnly => (None, Some(OperandRole::PostAttentionNorm), None),
+            NormPlacement::PreOnly => {
+                let pre_ffn = if slot.contains_key(&OperandRole::PreFfnNorm) {
+                    OperandRole::PreFfnNorm
+                } else {
+                    OperandRole::PostAttentionNorm
+                };
+                (None, Some(pre_ffn), None)
+            }
             NormPlacement::PreMixer => panic!(
                 "layer {layer} carries transformer operands under a mixer-only norm \
                  placement; closure should have refused this before the plan was built"
@@ -607,6 +614,29 @@ pub(super) fn construct_plan(c: ClosedComponent<'_>) -> ComponentOpPlan {
                         .output_gate
                         .map(|_| operand(&stack_id, get(OperandRole::MlaOutputGate))),
                     kv_a_norm_eps: m.kv_a_norm_eps,
+                }))
+            } else if slot.contains_key(&OperandRole::ShortConvInProj) {
+                let sc = surface.short_conv.unwrap_or_else(|| {
+                    panic!(
+                        "layer {layer} ships a ShortConv operand while the component declares no \
+                         short_conv geometry; closure should have refused this before the plan was built"
+                    )
+                });
+                LayerAttention::ShortConv(Box::new(ShortConvOp {
+                    hidden_size: component.hidden_size,
+                    conv_l_cache: sc.conv_l_cache,
+                    in_proj: operand(&stack_id, get(OperandRole::ShortConvInProj)),
+                    in_proj_bias: slot
+                        .get(&OperandRole::ShortConvInProjBias)
+                        .map(|t| operand(&stack_id, t)),
+                    conv_weight: operand(&stack_id, get(OperandRole::ShortConvWeight)),
+                    conv_bias: slot
+                        .get(&OperandRole::ShortConvBias)
+                        .map(|t| operand(&stack_id, t)),
+                    out_proj: operand(&stack_id, get(OperandRole::ShortConvOutProj)),
+                    out_proj_bias: slot
+                        .get(&OperandRole::ShortConvOutProjBias)
+                        .map(|t| operand(&stack_id, t)),
                 }))
             } else {
                 let a = attn.unwrap_or_else(|| {

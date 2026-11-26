@@ -376,6 +376,7 @@ pub fn plan_component_ops(
         .iter()
         .any(|l| !l.operator.is_mamba2() && !l.operator.is_conv_qkv());
     let runs_mamba2 = attention_table.iter().any(|l| l.operator.is_mamba2());
+    let runs_short_conv = attention_table.iter().any(|l| l.operator.is_short_conv());
     // A dense FFN needs a dense width. A wholly-routed component has
     // none and plans no dense layer, so the fact is required exactly when
     // some layer will run one: no routed judgment at all, a routed
@@ -394,6 +395,7 @@ pub fn plan_component_ops(
                 .to_string(),
         });
     }
+    // Closure check for declared operation surfaces.
     for (runs, present, fact) in [
         (attends, attn.is_some(), "attention surface"),
         (has_ffn_layer, ffn_surface.is_some(), "ffn surface"),
@@ -406,6 +408,11 @@ pub fn plan_component_ops(
             runs_mamba2,
             surface.mamba2.is_some(),
             "mamba2 mixer surface",
+        ),
+        (
+            runs_short_conv,
+            surface.short_conv.is_some_and(|s| s.conv_l_cache > 0),
+            "short_conv surface",
         ),
     ] {
         if runs && !present {
@@ -512,6 +519,8 @@ pub fn plan_component_ops(
             mla: surface.mla,
             mamba2: surface.mamba2,
             conv_qkv: surface.conv_qkv,
+            short_conv: surface.short_conv,
+            gate_granularity: attn.and_then(|a| a.output_gate).map(|g| g.granularity),
             hyper_connection,
         }
     };
@@ -726,7 +735,6 @@ pub fn plan_component_ops(
             component: component.id.clone(),
         });
     }
-    // ── The hyper-connection head ──
     let hc_head_tensors =
         tables
             .get(&ObjectKind::HyperConnectionHead)
@@ -739,8 +747,6 @@ pub fn plan_component_ops(
                     &mut defects,
                 )
             });
-
-    // ── The attention-residual exit ──
     let attn_res_exit_tensors =
         tables
             .get(&ObjectKind::AttentionResidualExit)
@@ -761,7 +767,6 @@ pub fn plan_component_ops(
         });
     }
 
-    // ── Plan construction (closure holds; lookups are now total) ──
     let plan = construct_plan(ClosedComponent {
         surface,
         component,
@@ -792,17 +797,6 @@ pub fn plan_component_ops(
     })
 }
 
-/// `absent_op`/`expected_shape`/`required_roles` are private pure
-/// functions over private `LayerOps`/`StackGeometry` structs, so — unlike
-/// the rest of this crate's tests, which build a real component/plan
-/// through `opplan/tests/` — these have to live beside the code they
-/// test (same reasoning `quant/convert.rs` and `opplan/gated_delta.rs`
-/// already use for their own pure-function arms). Every arm here is one
-/// no dense/softmax/non-MoE fixture reaches: hybrid dense+routed FFN,
-/// Gemma 4's router conditioning, a declared-false router bias, an
-/// unsplit expert scale stream, and the Gated DeltaNet operand-shape
-/// table (nothing in this crate encodes a `linear_attention` checkpoint
-/// through the real closure path yet — Qwen3.8's ladder is tracked
-/// separately).
+/// Pure-function unit tests for `absent_op`/`expected_shape`/`required_roles`.
 #[cfg(test)]
 mod tests;

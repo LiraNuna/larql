@@ -244,6 +244,9 @@ impl PreparedOperands {
                             layer.declared_norm_eps as f32,
                         )?))
                     }
+                    LayerAttention::ShortConv(op) => PreparedAttention::ShortConv(Box::new(
+                        ShortConvOperands::load(op, store, &attention_format)?,
+                    )),
                 },
                 post_attention: layer
                     .post_attention_norm

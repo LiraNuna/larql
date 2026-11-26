@@ -85,6 +85,11 @@ pub const EXECUTION_SEMANTIC_KEYS: &[&str] = &[
     "kda_layers",
     "full_attn_layers",
     "short_conv_kernel_size",
+    // Short gated depthwise-conv1d recurrence parameters and sandwich-norm
+    // toggle (LFM3).
+    "conv_L_cache",
+    "conv_bias",
+    "use_sandwich_norm",
     // The KDA decay clamp, which changes the decay envelope without
     // changing any shape.
     "gate_lower_bound",

@@ -158,6 +158,7 @@ pub fn execution_completeness(graph: &SystemGraph) -> Vec<CompletenessDefect> {
                             .any(|l| !l.operator.is_mamba2() && !l.operator.is_conv_qkv());
                         let runs_mamba2 = table.iter().any(|l| l.operator.is_mamba2());
                         let runs_conv_qkv = table.iter().any(|l| l.operator.is_conv_qkv());
+                        let runs_short_conv = table.iter().any(|l| l.operator.is_short_conv());
                         for (runs, present, operation) in [
                             (attends, surface.attention.is_some(), "attention"),
                             (has_ffn_layer, surface.ffn.is_some(), "ffn"),
@@ -167,6 +168,7 @@ pub fn execution_completeness(graph: &SystemGraph) -> Vec<CompletenessDefect> {
                                 surface.conv_qkv.is_some(),
                                 "conv-qkv attention",
                             ),
+                            (runs_short_conv, surface.short_conv.is_some(), "short_conv"),
                         ] {
                             if runs && !present {
                                 defects.push(CompletenessDefect::MissingOperationSurface {

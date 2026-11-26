@@ -243,6 +243,12 @@ pub(super) struct LayerOps {
     /// — what decides the conv-bias operand requirement on a hybrid
     /// attention layer.
     pub(super) conv_qkv: Option<larql_models::config::ConvQkvAttnGeometry>,
+    /// The short-conv recurrence geometry, on a component that declares one.
+    pub(super) short_conv: Option<larql_models::config::ShortConvGeometry>,
+    /// Under two-norm `PreOnly`, whether the layer uses an explicit
+    /// `PreFfnNorm` spelling (`ffn_norm.weight`) rather than the historical
+    /// overloaded `PostAttentionNorm` (`post_attention_layernorm.weight`).
+    pub(super) pre_ffn_explicit: bool,
     /// V is the K projection on this layer: no V operand is required, and
     /// one present is a stray.
     pub(super) v_from_k: bool,

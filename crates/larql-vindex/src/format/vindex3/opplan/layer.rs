@@ -19,7 +19,8 @@ impl LayerAttention {
             | Self::Kda(_)
             | Self::Mla(_)
             | Self::Mamba2(_)
-            | Self::ConvQkv(_) => None,
+            | Self::ConvQkv(_)
+            | Self::ShortConv(_) => None,
         }
     }
 
@@ -31,7 +32,8 @@ impl LayerAttention {
             | Self::Kda(_)
             | Self::Mla(_)
             | Self::Mamba2(_)
-            | Self::ConvQkv(_) => None,
+            | Self::ConvQkv(_)
+            | Self::ShortConv(_) => None,
         }
     }
 
@@ -43,9 +45,12 @@ impl LayerAttention {
     pub fn gated_delta(&self) -> Option<&GatedDeltaOp> {
         match self {
             Self::GatedDelta(op) => Some(op.as_ref()),
-            Self::Softmax(_) | Self::Kda(_) | Self::Mla(_) | Self::Mamba2(_) | Self::ConvQkv(_) => {
-                None
-            }
+            Self::Softmax(_)
+            | Self::Kda(_)
+            | Self::Mla(_)
+            | Self::Mamba2(_)
+            | Self::ConvQkv(_)
+            | Self::ShortConv(_) => None,
         }
     }
 
@@ -57,7 +62,8 @@ impl LayerAttention {
             | Self::GatedDelta(_)
             | Self::Mla(_)
             | Self::Mamba2(_)
-            | Self::ConvQkv(_) => None,
+            | Self::ConvQkv(_)
+            | Self::ShortConv(_) => None,
         }
     }
 
@@ -69,7 +75,8 @@ impl LayerAttention {
             | Self::GatedDelta(_)
             | Self::Kda(_)
             | Self::Mamba2(_)
-            | Self::ConvQkv(_) => None,
+            | Self::ConvQkv(_)
+            | Self::ShortConv(_) => None,
         }
     }
 
@@ -81,6 +88,20 @@ impl LayerAttention {
             | Self::GatedDelta(_)
             | Self::Kda(_)
             | Self::Mla(_)
+            | Self::ConvQkv(_)
+            | Self::ShortConv(_) => None,
+        }
+    }
+
+    /// The ShortConv op, when this layer runs the gated causal depthwise-conv1d recurrence.
+    pub fn short_conv(&self) -> Option<&ShortConvOp> {
+        match self {
+            Self::ShortConv(op) => Some(op.as_ref()),
+            Self::Softmax(_)
+            | Self::GatedDelta(_)
+            | Self::Kda(_)
+            | Self::Mla(_)
+            | Self::Mamba2(_)
             | Self::ConvQkv(_) => None,
         }
     }
@@ -103,6 +124,7 @@ impl LayerAttention {
             Self::GatedDelta(op) => Some(op.state_elements()),
             Self::Kda(op) => Some(op.state_elements()),
             Self::Mamba2(op) => Some(op.state_elements()),
+            Self::ShortConv(op) => Some(op.state_elements()),
         }
     }
 
@@ -115,6 +137,7 @@ impl LayerAttention {
             Self::GatedDelta(_) | Self::Kda(_) | Self::Mamba2(_) => {
                 larql_models::config::LAYER_TYPE_LINEAR_ATTENTION
             }
+            Self::ShortConv(_) => larql_models::config::LAYER_TYPE_CONV,
             // The hybrid's index-set spelling names WHICH layers attend;
             // the span vocabulary is its round-trip, as in the graph's
             // identical judgment.

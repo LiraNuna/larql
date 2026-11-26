@@ -114,6 +114,11 @@ const GROUP_PATTERNS: &[(GroupClass, &[&str])] = &[
             "audio_embedder",
         ],
     ),
+    // `model.embedding_norm.weight` (LFM3's final RMSNorm after the decoder
+    // stack) contains `"embedding"` and `"norm"`. Listed before
+    // `GroupClass::Embedding` so it lands in `FinalNorm` instead of merging
+    // into the vocabulary `Embedding` object.
+    (GroupClass::Norm, &["embedding_norm"]),
     (
         GroupClass::Embedding,
         &[

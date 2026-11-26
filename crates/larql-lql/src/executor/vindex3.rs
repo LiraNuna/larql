@@ -551,6 +551,7 @@ impl Session {
                         LayerAttention::Mamba2(_) => "mamba2",
                         LayerAttention::Mla(_) => "mla",
                         LayerAttention::ConvQkv(_) => "conv-qkv",
+                        LayerAttention::ShortConv(_) => "short-conv",
                         LayerAttention::Softmax(_) => unreachable!("softmax handled above"),
                     },
                     dash.clone(),

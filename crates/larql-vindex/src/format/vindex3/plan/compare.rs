@@ -22,6 +22,12 @@ fn recurrence_kind(inventory: &ArchitectureInventory) -> Option<RecurrenceKind> 
     if inventory.resolved.kda.is_some() {
         return Some(RecurrenceKind::Kda);
     }
+    if inventory.resolved.mamba2.is_some() {
+        return Some(RecurrenceKind::Mamba2);
+    }
+    if inventory.resolved.short_conv.is_some() {
+        return Some(RecurrenceKind::ShortConv);
+    }
     inventory
         .resolved
         .linear_attention
@@ -386,7 +392,10 @@ fn layer_types_finding(inventory: &ArchitectureInventory) -> Option<Finding> {
                 // `GatedDeltaOp` + 16 `Softmax`), and this arm is a
                 // recorded declaration until then. Said plainly here so
                 // the arm is not read as a check it is not.
-                LayerOperator::GatedDelta | LayerOperator::Kda | LayerOperator::Mamba2 => false,
+                LayerOperator::GatedDelta
+                | LayerOperator::Kda
+                | LayerOperator::Mamba2
+                | LayerOperator::ShortConv => false,
                 // The hybrid's attention layers have no `layer_types`
                 // array to disagree with (the index-set spelling is
                 // resolved upstream), so nothing here can contradict
@@ -435,7 +444,9 @@ fn layer_types_finding(inventory: &ArchitectureInventory) -> Option<Finding> {
                                 uses_mla(inventory)
                             )
                             .0,
-                            LayerOperator::GatedDelta | LayerOperator::Kda
+                            LayerOperator::GatedDelta
+                                | LayerOperator::Kda
+                                | LayerOperator::ShortConv
                         )
                     })
                     .count();

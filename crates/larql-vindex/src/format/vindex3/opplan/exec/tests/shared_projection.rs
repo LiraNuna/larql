@@ -44,6 +44,7 @@ fn spec(source: GateSource) -> AttentionGateSpec {
         activation: GateActivation::Sigmoid,
         combine: GateCombine::ElementwiseMultiply,
         placement: GatePlacement::AfterAggregationBeforeOutputProjection,
+        granularity: larql_models::config::GateGranularity::PerElement,
     }
 }
 

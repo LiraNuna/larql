@@ -374,6 +374,9 @@ pub(super) fn recurrence_kind(inventory: &ArchitectureInventory) -> Option<Recur
     if inventory.resolved.mamba2.is_some() {
         return Some(RecurrenceKind::Mamba2);
     }
+    if inventory.resolved.short_conv.is_some() {
+        return Some(RecurrenceKind::ShortConv);
+    }
     inventory
         .resolved
         .linear_attention
@@ -422,6 +425,7 @@ pub(super) fn operator_and_span(
                 Some(RecurrenceKind::Kda) => LayerOperator::Kda,
                 Some(RecurrenceKind::GatedDelta) => LayerOperator::GatedDelta,
                 Some(RecurrenceKind::Mamba2) => LayerOperator::Mamba2,
+                Some(RecurrenceKind::ShortConv) => LayerOperator::ShortConv,
                 None => LayerOperator::Recurrent,
             },
             None,

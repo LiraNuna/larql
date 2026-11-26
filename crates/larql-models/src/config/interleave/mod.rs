@@ -84,6 +84,9 @@ pub enum RecurrenceFamily {
     /// Mamba2 / SSD (`state_size`-family geometry — see
     /// [`Mamba2Geometry`](crate::config::Mamba2Geometry)).
     Mamba2,
+    /// Gated depthwise short convolution (`Lfm3ShortConv` — `conv` layers with
+    /// [`ShortConvGeometry`](crate::config::ShortConvGeometry)).
+    ShortConv,
     /// Declared recurrent, family not identified by any geometry read.
     Unidentified,
 }

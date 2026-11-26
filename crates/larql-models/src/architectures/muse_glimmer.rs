@@ -24,8 +24,7 @@
 //! path, which its operand estate closes under.
 
 use crate::config::{
-    AttentionGateSpec, EmbeddingNorm, GateActivation, GateCombine, GatePlacement, GateSource,
-    ModelArchitecture, ModelConfig, NormSpec, ParameterFreeQkNorm,
+    AttentionGateSpec, EmbeddingNorm, ModelArchitecture, ModelConfig, NormSpec, ParameterFreeQkNorm,
 };
 
 /// Offset of a *centred* norm: weights are stored around zero and the
@@ -118,12 +117,7 @@ impl Norms for MuseGlimmerArch {
 
 impl Attention for MuseGlimmerArch {
     fn attention_output_gate(&self) -> Option<AttentionGateSpec> {
-        Some(AttentionGateSpec {
-            source: GateSource::AttentionInput,
-            activation: GateActivation::Sigmoid,
-            combine: GateCombine::ElementwiseMultiply,
-            placement: GatePlacement::AfterAggregationBeforeOutputProjection,
-        })
+        Some(AttentionGateSpec::from_attention_input_sigmoid_before_output_projection())
     }
 }
 

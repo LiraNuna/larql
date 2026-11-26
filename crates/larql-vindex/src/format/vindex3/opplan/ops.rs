@@ -374,4 +374,6 @@ pub enum LayerAttention {
     /// one: the compressed-KV operands have no softmax counterpart, and
     /// the shared `q_proj`/`o_proj` SUFFIXES are a different WIDTH.
     Mla(Box<MlaOp>),
+    /// Short gated causal depthwise-conv1d recurrence (`conv` layers).
+    ShortConv(Box<ShortConvOp>),
 }

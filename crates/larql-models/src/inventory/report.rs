@@ -251,6 +251,10 @@ pub struct ResolvedTopology {
     /// meaningful prefix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pad_vocab_size_multiple: Option<usize>,
+    /// Declared gated short-convolution geometry (`conv_L_cache`, `conv_bias`),
+    /// when the checkpoint carries `conv` layers (LFM3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short_conv: Option<crate::config::ShortConvGeometry>,
 }
 
 /// The precision a recurrent state is kept at.

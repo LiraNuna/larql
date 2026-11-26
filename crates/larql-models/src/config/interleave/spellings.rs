@@ -13,8 +13,8 @@ use super::{
     InterleaveError, LayerKind, Membership, RecurrenceFamily,
 };
 use crate::config::layer_types::{
-    LAYER_TYPE_FULL_ATTENTION, LAYER_TYPE_LINEAR_ATTENTION, LAYER_TYPE_SLIDING_ATTENTION,
-    LAYER_TYPE_WINDOW_ATTENTION,
+    LAYER_TYPE_CONV, LAYER_TYPE_FULL_ATTENTION, LAYER_TYPE_LINEAR_ATTENTION,
+    LAYER_TYPE_SLIDING_ATTENTION, LAYER_TYPE_WINDOW_ATTENTION,
 };
 
 /// Which layer space a declaration indexes.
@@ -57,6 +57,8 @@ fn kind_from_layer_type(entry: &str, window: Option<usize>) -> Option<LayerKind>
         || entry.eq_ignore_ascii_case(LAYER_TYPE_WINDOW_ATTENTION)
     {
         Some(LayerKind::Sliding { window })
+    } else if entry.eq_ignore_ascii_case(LAYER_TYPE_CONV) {
+        Some(LayerKind::Recurrent(RecurrenceFamily::ShortConv))
     } else if entry.eq_ignore_ascii_case(LAYER_TYPE_LINEAR_ATTENTION) {
         // The array names a recurrence but never which one; the geometry
         // does that, and it is read elsewhere.

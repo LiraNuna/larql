@@ -215,10 +215,9 @@ fn placement_evidence_refuses_partial_and_absent_estates() {
     assert!(err.contains("no per-layer norm operands"), "{err}");
 }
 
-/// LFM2's spelling of the two-norm estate resolves to the placement it
-/// actually is, and the mapping that looks wrong is the one that is
-/// right: `ffn_norm` binds to `PostAttentionNorm`, because in a two-norm
-/// layer that role IS the pre-FFN norm and keeps the historical name.
+/// LFM2's two-norm estate (`operator_norm` + `ffn_norm`) resolves to
+/// `PreOnly`, while LFM3's four-norm sandwich estate (`operator_norm`,
+/// `post_operator_norm`, `ffn_norm`, `post_ffn_norm`) resolves to `PrePost`.
 #[test]
 fn the_lfm2_norm_dialect_resolves_to_the_two_norm_placement() {
     let lfm2 = ["0.operator_norm.weight", "0.ffn_norm.weight"];
@@ -227,15 +226,28 @@ fn the_lfm2_norm_dialect_resolves_to_the_two_norm_placement() {
         Ok(NormPlacement::PreOnly)
     );
 
-    // The falsifier for the mapping choice: binding `ffn_norm` to the
-    // honestly-named `PreFfnNorm` would read the estate as a PARTIAL
-    // four-norm stack and refuse it. That is what this arrangement
-    // avoids, and the assertion states the shape it would have produced.
-    let as_pre_ffn = [
+    let lfm3 = [
         "0.operator_norm.weight",
-        "0.pre_feedforward_layernorm.weight",
+        "0.post_operator_norm.weight",
+        "0.ffn_norm.weight",
+        "0.post_ffn_norm.weight",
     ];
-    let err = norm_placement_evidence(as_pre_ffn.iter().copied()).unwrap_err();
+    assert_eq!(
+        norm_placement_evidence(lfm3.iter().copied()),
+        Ok(NormPlacement::PrePost)
+    );
+
+    // Partial three-norm or mismatched two-norm estates are still refused.
+    let partial_three = [
+        "0.operator_norm.weight",
+        "0.post_operator_norm.weight",
+        "0.ffn_norm.weight",
+    ];
+    let err = norm_placement_evidence(partial_three.iter().copied()).unwrap_err();
+    assert!(err.contains("neither two-norm nor four-norm"), "{err}");
+
+    let mismatched_two = ["0.operator_norm.weight", "0.post_ffn_norm.weight"];
+    let err = norm_placement_evidence(mismatched_two.iter().copied()).unwrap_err();
     assert!(err.contains("neither two-norm nor four-norm"), "{err}");
 
     // And one norm alone is still no judged placement.

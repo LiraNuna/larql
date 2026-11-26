@@ -339,4 +339,22 @@ pub(super) const HYBRID_RULES: &[CarriageRule] = &[
         site: "Component.attention[].position (PositionPolicy::MRope.section) → mrope_axis_table → mrope_rotate",
         probe: Some(probe_mrope_section),
     },
+    CarriageRule {
+        leaf: "conv_L_cache",
+        reaches: Carriage::Lowered,
+        site: "ExecutionSurface.short_conv.conv_l_cache → ShortConvOp.conv_l_cache",
+        probe: Some(probe_short_conv_l_cache),
+    },
+    CarriageRule {
+        leaf: "conv_bias",
+        reaches: Carriage::Lowered,
+        site: "ExecutionSurface.short_conv.conv_bias → ShortConvOp optional bias operands",
+        probe: Some(probe_short_conv_bias),
+    },
+    CarriageRule {
+        leaf: "use_sandwich_norm",
+        reaches: Carriage::Lowered,
+        site: "ExecutionSurface.norm.placement (PrePost vs PreOnly) → LayerPlan post-norms",
+        probe: Some(probe_use_sandwich_norm),
+    },
 ];

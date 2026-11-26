@@ -232,6 +232,10 @@ fn attention(attention: &LayerAttention, layer: usize, out: &mut Vec<PlannedOper
             push(&op.in_proj);
             push(&op.out_proj);
         }
+        LayerAttention::ShortConv(op) => {
+            push(&op.in_proj);
+            push(&op.out_proj);
+        }
         LayerAttention::Kda(op) => {
             for operand in [&op.q_proj, &op.k_proj, &op.v_proj, &op.out_proj] {
                 push(operand);

@@ -79,21 +79,15 @@ pub(super) const ROLE_TABLE: &[(&str, OperandRole)] = &[
         OperandRole::LinearAttnOutProj,
     ),
     ("input_layernorm.weight", OperandRole::PreAttentionNorm),
-    // LFM2's spelling of the same two-norm estate. `Lfm2DecoderLayer.
-    // forward` is `residual = h; h = mixer(operator_norm(h)); h = h +
-    // residual; h = h + feed_forward(ffn_norm(h))` — structurally the
-    // two-norm PRE-only stack, with the mixer being attention on the
-    // layers named in `full_attn_idxs` and a short convolution
-    // elsewhere.
-    //
-    // `ffn_norm` binds to `PostAttentionNorm` and that reads oddly until
-    // you know the rule this module already states: in a TWO-norm layer
-    // `post_attention_layernorm` IS the pre-FFN norm, and the role keeps
-    // the historical name. Binding LFM2's honestly-named `ffn_norm` to
-    // the honestly-named `PreFfnNorm` would instead resolve the estate
-    // as a partial FOUR-norm stack and refuse it.
+    // LFM2 / LFM3 norm spellings. In a two-norm stack (LFM2 or LFM3 with
+    // `use_sandwich_norm = false`), `operator_norm` + `ffn_norm` resolve to
+    // `NormPlacement::PreOnly` via `(pre_attn, pre_ffn)`. In a four-norm
+    // sandwich stack (LFM3 with `use_sandwich_norm = true`),
+    // `post_operator_norm` + `post_ffn_norm` complete `NormPlacement::PrePost`.
     ("operator_norm.weight", OperandRole::PreAttentionNorm),
-    ("ffn_norm.weight", OperandRole::PostAttentionNorm),
+    ("post_operator_norm.weight", OperandRole::PostAttentionNorm),
+    ("ffn_norm.weight", OperandRole::PreFfnNorm),
+    ("post_ffn_norm.weight", OperandRole::PostFfnNorm),
     (
         "post_attention_layernorm.weight",
         OperandRole::PostAttentionNorm,
@@ -106,6 +100,10 @@ pub(super) const ROLE_TABLE: &[(&str, OperandRole)] = &[
     ("mlp.gate_proj.weight", OperandRole::FfnGate),
     ("mlp.up_proj.weight", OperandRole::FfnUp),
     ("mlp.down_proj.weight", OperandRole::FfnDown),
+    // LFM2 / LFM3 SwiGLU FFN spellings (`feed_forward.w1/w3/w2` = gate/up/down).
+    ("feed_forward.w1.weight", OperandRole::FfnGate),
+    ("feed_forward.w3.weight", OperandRole::FfnUp),
+    ("feed_forward.w2.weight", OperandRole::FfnDown),
     ("mlp.router.weight", OperandRole::MoeRouterWeight),
     // The Qwen MoE lineage's router (`Qwen2MoeSparseMoeBlock.gate`,
     // `[num_experts, hidden]`). Distinct from the dense `mlp.gate_proj`.

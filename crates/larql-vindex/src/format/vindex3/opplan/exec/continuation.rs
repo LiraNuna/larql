@@ -334,6 +334,9 @@ pub fn plan_continuation_geometry(
             LayerAttention::Mamba2(op) => Ok(LayerContinuationGeometry::Recurrent(
                 super::mamba2::state_geometry(op),
             )),
+            LayerAttention::ShortConv(op) => Ok(LayerContinuationGeometry::Recurrent(
+                super::short_conv::state_geometry(op),
+            )),
             LayerAttention::GatedDelta(op) => {
                 // A recurrence must be held at SOME precision, and the
                 // planner does not get to pick one. An undeclared state

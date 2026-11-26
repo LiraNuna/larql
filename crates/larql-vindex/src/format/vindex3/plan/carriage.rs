@@ -422,6 +422,16 @@ fn probe_rope_type(component: &Component, ctx: &ProbeContext<'_>) -> Option<Valu
     let class = layers
         .find_map(|l| l.position.declared_rope_type())
         .unwrap_or(larql_models::config::ROPE_TYPE_DEFAULT);
+    // Head-width-basis zero-tail partial RoPE (`PartialRope { basis: HeadWidth }`)
+    // is declared as `"proportional"` on Gemma 4 and as `"default"` (alongside
+    // `partial_rotary_factor`) on LFM3. Both spellings describe the identical
+    // frequency table; any other declared rope_type (`yarn`, `llama3`, `linear`,
+    // etc.) still mismatches.
+    if class == larql_models::config::ROPE_TYPE_PROPORTIONAL
+        && ctx.declared.as_str() == Some(larql_models::config::ROPE_TYPE_DEFAULT)
+    {
+        return Some(json!(larql_models::config::ROPE_TYPE_DEFAULT));
+    }
     Some(json!(class))
 }
 

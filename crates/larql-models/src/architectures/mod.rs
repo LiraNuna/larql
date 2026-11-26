@@ -21,6 +21,7 @@ pub mod granite;
 pub mod kimi;
 pub mod kimi_k3;
 pub mod lfm2;
+pub mod lfm3;
 pub mod llama;
 pub mod mamba2;
 pub mod mistral;

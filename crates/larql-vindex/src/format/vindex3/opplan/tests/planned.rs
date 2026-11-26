@@ -159,6 +159,10 @@ fn each_variant_lists_exactly_its_matrices_in_loader_order() {
                     seen.insert("mla");
                     4
                 }
+                LayerAttention::ShortConv(_) => {
+                    seen.insert("short-conv");
+                    2
+                }
             };
             let per_ffn = match &layer.ffn {
                 None => 0,
@@ -198,6 +202,7 @@ fn each_variant_lists_exactly_its_matrices_in_loader_order() {
                 LayerAttention::ConvQkv(_) => "conv-qkv",
                 LayerAttention::Kda(_) => "kda",
                 LayerAttention::Mla(_) => "mla",
+                LayerAttention::ShortConv(_) => "short-conv",
             })
         })
         .collect();

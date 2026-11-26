@@ -16,6 +16,7 @@ pub fn qwen_shaped_surface() -> ExecutionSurface {
     };
     ExecutionSurface {
         context_length: Some(262_144),
+        short_conv: None,
         // A qwen35 hybrid attends in every fourth layer, so a surface
         // with no attention or FFN is not one — the preflight said so
         // when this fixture first omitted them, which is the gate

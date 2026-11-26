@@ -288,6 +288,9 @@ fn test_orient_ffn_tensors_fixes_gpt2_style_inverse_layout() {
         mtp_use_dedicated_embeddings: None,
         mrope_interleaved: None,
         mrope_section: None,
+        conv_l_cache: None,
+        conv_bias: None,
+        use_sandwich_norm: None,
     };
     let arch = crate::architectures::gpt2::Gpt2Arch::from_config(cfg);
 

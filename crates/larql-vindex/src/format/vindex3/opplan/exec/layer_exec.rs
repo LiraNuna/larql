@@ -226,6 +226,19 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
             let state = provider.recurrent_state(layer_index)?;
             mamba2::layer_forward_with(&ops.op, &weights, &inputs, state, projector).output
         }
+        PreparedAttention::ShortConv(ops) => {
+            let Some((provider, layer_index)) = kv else {
+                return Err(VindexError::Parse(format!(
+                    "layer {} runs a recurrence, which needs durable continuation state, \
+                     and this traversal was given no provider to hold it",
+                    layer.layer
+                )));
+            };
+            let weights = ops.weights()?;
+            let projector = consuming_projector(backend.dense_projector(), &weights, layer.layer)?;
+            let state = provider.recurrent_state(layer_index)?;
+            short_conv::layer_forward_with(&ops.op, &weights, &inputs, state, projector).output
+        }
         PreparedAttention::Kda(ops) => {
             let Some((provider, layer_index)) = kv else {
                 return Err(VindexError::Parse(format!(

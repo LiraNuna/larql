@@ -14,6 +14,7 @@ use super::kda::KdaWeights;
 use super::mamba2::Mamba2Weights;
 use super::mla::{MlaQueryWeights, MlaWeights};
 use super::prepared::{PreparedAttention, PreparedOperands};
+use super::short_conv::ShortConvWeights;
 use crate::error::VindexError;
 
 /// A mixer's dense operands, as (operand name, resident rows).
@@ -67,6 +68,13 @@ impl DenseRowSet for Mamba2Weights<'_> {
 
 impl DenseRowSet for ConvQkvWeights<'_> {
     const MIXER: &'static str = "conv-QKV";
+    fn dense_rows(&self) -> Vec<(&'static str, WeightRows<'_>)> {
+        vec![("in_proj", self.in_proj), ("out_proj", self.out_proj)]
+    }
+}
+
+impl DenseRowSet for ShortConvWeights<'_> {
+    const MIXER: &'static str = "ShortConv";
     fn dense_rows(&self) -> Vec<(&'static str, WeightRows<'_>)> {
         vec![("in_proj", self.in_proj), ("out_proj", self.out_proj)]
     }
@@ -140,6 +148,9 @@ pub(super) fn refuse_unconsumable_plan(
                 consuming_projector(projector, &o.weights()?, layer)?;
             }
             PreparedAttention::Mla(o) => {
+                consuming_projector(projector, &o.weights()?, layer)?;
+            }
+            PreparedAttention::ShortConv(o) => {
                 consuming_projector(projector, &o.weights()?, layer)?;
             }
         }

@@ -33,6 +33,8 @@ pub(super) fn expected_shape(
         mla,
         mamba2,
         conv_qkv,
+        short_conv,
+        gate_granularity,
         hyper_connection,
     } = *g;
     match role {
@@ -98,6 +100,13 @@ pub(super) fn expected_shape(
         }
         OperandRole::ConvQkvConv1dBias => Some(vec![conv_qkv?.qkv_rows()]),
         OperandRole::ConvQkvOutProj => Some(vec![hidden, conv_qkv?.attn_out_width()]),
+        // ShortConv (`Lfm3ShortConv`): fused [3*D, D], depthwise [D, 1, L_cache], out [D, D].
+        OperandRole::ShortConvInProj => Some(vec![3 * hidden, hidden]),
+        OperandRole::ShortConvInProjBias => Some(vec![3 * hidden]),
+        OperandRole::ShortConvWeight => Some(vec![hidden, 1, short_conv?.conv_l_cache]),
+        OperandRole::ShortConvBias => Some(vec![hidden]),
+        OperandRole::ShortConvOutProj => Some(vec![hidden, hidden]),
+        OperandRole::ShortConvOutProjBias => Some(vec![hidden]),
         OperandRole::AttnQ => Some(vec![q_proj_rows, hidden]),
         OperandRole::AttnK | OperandRole::AttnV => Some(vec![kv_rows, hidden]),
         OperandRole::AttnO => Some(vec![hidden, q_rows]),
@@ -222,8 +231,12 @@ pub(super) fn expected_shape(
         OperandRole::MlaOutputGate => Some(vec![mla?.num_heads * mla?.v_head_dim, hidden]),
         OperandRole::FfnGate | OperandRole::FfnUp => Some(vec![intermediate, hidden]),
         OperandRole::FfnDown => Some(vec![hidden, intermediate]),
-        // Linear(hidden -> q_heads*head_dim), per the judged spec.
-        OperandRole::AttnOutputGate => Some(vec![q_rows, hidden]),
+        // Linear(hidden -> q_heads) for per-head scalar gate, or
+        // Linear(hidden -> q_heads*head_dim) for per-element gate.
+        OperandRole::AttnOutputGate => match gate_granularity {
+            Some(larql_models::config::GateGranularity::PerHead) => Some(vec![num_q_heads, hidden]),
+            _ => Some(vec![q_rows, hidden]),
+        },
         // A bias is one value per output row of its projection.
         OperandRole::AttnQBias => Some(vec![q_rows]),
         OperandRole::AttnKBias | OperandRole::AttnVBias => Some(vec![kv_rows]),

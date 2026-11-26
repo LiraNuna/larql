@@ -75,6 +75,7 @@ fn an_lllf_stack_dispatches_three_recurrences_then_one_softmax() {
             LayerAttention::Mla(_) => "M",
             LayerAttention::Mamba2(_) => "S",
             LayerAttention::ConvQkv(_) => "C",
+            LayerAttention::ShortConv(_) => "SC",
         })
         .collect();
     assert_eq!(
@@ -210,6 +211,9 @@ fn each_layer_updates_its_own_kind_of_state_and_no_other() {
             }
             LayerAttention::ConvQkv(_) => {
                 panic!("layer {index}: fixture is Gated DeltaNet, not conv-QKV attention")
+            }
+            LayerAttention::ShortConv(_) => {
+                panic!("layer {index}: fixture is Gated DeltaNet, not ShortConv")
             }
             LayerAttention::GatedDelta(_) => {
                 let state = provider.recurrent_state(index).expect("a recurrent layer");

@@ -142,43 +142,57 @@ impl ProductionBackend {
         // The gate values, computed before anything multiplies the heads,
         // so a tap can carry each head's activated slice; the multiply
         // itself is unchanged below.
-        let gate_values: Option<Vec<f32>> = if let Some(GateCall { spec, weight }) = &call.gate {
-            // Exhaustive on the judged semantics, same as the
-            // reference: a new variant must be implemented before it
-            // can execute on this backend either.
-            let GateActivation::Sigmoid = spec.activation;
-            let GateCombine::ElementwiseMultiply = spec.combine;
-            let GatePlacement::AfterAggregationBeforeOutputProjection = spec.placement;
-            let values = match (spec.source, projected_gate) {
-                // Already computed: the projection that produced the
-                // queries produced these in the same pass.
-                (GateSource::FusedQueryProjection, Some(values)) => values.to_vec(),
-                // A fused gate with nothing handed over — the batched
-                // path before it threads one through, or a caller that
-                // reached here another way. Correct, and reads the
-                // operand a second time; the ledger shows it as an extra
-                // call rather than hiding it.
-                (GateSource::FusedQueryProjection, None) => {
-                    let full = project_matrix(weight, gate_input, q_rows * 2, call.hidden)?;
-                    gather_fused_half(&full, call.num_q_heads, call.head_dim, FusedHalf::Gate)
-                }
-                // Its own matrix over its own activation: nothing to
-                // share, and sharing would be wrong.
-                (GateSource::AttentionInput, _) => {
-                    project_matrix(weight, gate_input, q_rows, call.hidden)?
-                }
+        let gate_values: Option<(larql_models::config::GateGranularity, Vec<f32>)> =
+            if let Some(GateCall { spec, weight }) = &call.gate {
+                // Exhaustive on the judged semantics, same as the
+                // reference: a new variant must be implemented before it
+                // can execute on this backend either.
+                let GateActivation::Sigmoid = spec.activation;
+                let GateCombine::ElementwiseMultiply = spec.combine;
+                let GatePlacement::AfterAggregationBeforeOutputProjection = spec.placement;
+                let values = match (spec.source, projected_gate) {
+                    // Already computed: the projection that produced the
+                    // queries produced these in the same pass.
+                    (GateSource::FusedQueryProjection, Some(values)) => values.to_vec(),
+                    // A fused gate with nothing handed over — the batched
+                    // path before it threads one through, or a caller that
+                    // reached here another way. Correct, and reads the
+                    // operand a second time; the ledger shows it as an extra
+                    // call rather than hiding it.
+                    (GateSource::FusedQueryProjection, None) => {
+                        let full = project_matrix(weight, gate_input, q_rows * 2, call.hidden)?;
+                        gather_fused_half(&full, call.num_q_heads, call.head_dim, FusedHalf::Gate)
+                    }
+                    // Its own matrix over its own activation: nothing to
+                    // share, and sharing would be wrong.
+                    (GateSource::AttentionInput, _) => {
+                        let gate_rows = match spec.granularity {
+                            larql_models::config::GateGranularity::PerHead => call.num_q_heads,
+                            larql_models::config::GateGranularity::PerElement => q_rows,
+                        };
+                        project_matrix(weight, gate_input, gate_rows, call.hidden)?
+                    }
+                };
+                Some((spec.granularity, values))
+            } else {
+                None
             };
-            Some(values)
-        } else {
-            None
-        };
 
         // V3-HEAD-OBS-1: the records, between aggregation and the gate,
         // built in the one place every backend shares.
         if let Some(tap) = tap {
-            let activated: Option<Vec<f32>> = gate_values
-                .as_ref()
-                .map(|g| g.iter().map(|g| 1.0 / (1.0 + (-g).exp())).collect());
+            let activated: Option<Vec<f32>> =
+                gate_values
+                    .as_ref()
+                    .map(|(granularity, g)| match granularity {
+                        larql_models::config::GateGranularity::PerHead => g
+                            .iter()
+                            .flat_map(|g| std::iter::repeat_n(1.0 / (1.0 + (-g).exp()), head_dim))
+                            .collect(),
+                        larql_models::config::GateGranularity::PerElement => {
+                            g.iter().map(|g| 1.0 / (1.0 + (-g).exp())).collect()
+                        }
+                    });
             super::super::observe::fire_head_records(
                 tap,
                 position,
@@ -206,10 +220,22 @@ impl ProductionBackend {
             }
         }
 
-        if let Some(gate_values) = &gate_values {
+        if let Some((granularity, gate_values)) = &gate_values {
             let _t = timed(OpClass::OutputGate);
-            for (c, g) in concat.iter_mut().zip(gate_values) {
-                *c *= 1.0 / (1.0 + (-g).exp());
+            match granularity {
+                larql_models::config::GateGranularity::PerHead => {
+                    for (head_slice, &g) in concat.chunks_exact_mut(head_dim).zip(gate_values) {
+                        let factor = 1.0 / (1.0 + (-g).exp());
+                        for c in head_slice {
+                            *c *= factor;
+                        }
+                    }
+                }
+                larql_models::config::GateGranularity::PerElement => {
+                    for (c, g) in concat.iter_mut().zip(gate_values) {
+                        *c *= 1.0 / (1.0 + (-g).exp());
+                    }
+                }
             }
         }
 

@@ -396,9 +396,14 @@ impl ReferenceBackend {
             let GateActivation::Sigmoid = spec.activation;
             let GateCombine::ElementwiseMultiply = spec.combine;
             let GatePlacement::AfterAggregationBeforeOutputProjection = spec.placement;
+            let gate_granularity = spec.granularity;
             let gate_values = match spec.source {
                 GateSource::AttentionInput => {
-                    matvec(weight.as_f32()?, q_rows, call.hidden, gate_input)
+                    let gate_rows = match gate_granularity {
+                        larql_models::config::GateGranularity::PerHead => call.num_q_heads,
+                        larql_models::config::GateGranularity::PerElement => q_rows,
+                    };
+                    matvec(weight.as_f32()?, gate_rows, call.hidden, gate_input)
                 }
                 // The gate rows live inside the query projection, so the
                 // "gate weight" IS that projection and the gate is its
@@ -454,7 +459,15 @@ impl ReferenceBackend {
             // V3-HEAD-OBS-1: the records, with the activated gate the
             // multiply below will apply, before it applies.
             if let Some(tap) = tap.as_deref_mut() {
-                let activated: Vec<f32> = gate_values.iter().map(|g| activate_gate(*g)).collect();
+                let activated: Vec<f32> = match gate_granularity {
+                    larql_models::config::GateGranularity::PerHead => gate_values
+                        .iter()
+                        .flat_map(|g| std::iter::repeat_n(activate_gate(*g), head_dim))
+                        .collect(),
+                    larql_models::config::GateGranularity::PerElement => {
+                        gate_values.iter().map(|g| activate_gate(*g)).collect()
+                    }
+                };
                 super::super::observe::fire_head_records(
                     tap,
                     position,
@@ -483,8 +496,21 @@ impl ReferenceBackend {
             if gate_mutation != GateMutation::NoGate
                 && gate_mutation != GateMutation::GateAfterOProj
             {
-                for (c, g) in concat.iter_mut().zip(&gate_values) {
-                    *c *= activate_gate(*g);
+                match gate_granularity {
+                    larql_models::config::GateGranularity::PerHead => {
+                        for (head_slice, &g) in concat.chunks_exact_mut(head_dim).zip(&gate_values)
+                        {
+                            let factor = activate_gate(g);
+                            for c in head_slice {
+                                *c *= factor;
+                            }
+                        }
+                    }
+                    larql_models::config::GateGranularity::PerElement => {
+                        for (c, g) in concat.iter_mut().zip(&gate_values) {
+                            *c *= activate_gate(*g);
+                        }
+                    }
                 }
             }
             if gate_mutation == GateMutation::GateAfterOProj {

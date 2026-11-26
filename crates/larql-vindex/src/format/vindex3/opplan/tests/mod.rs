@@ -16,6 +16,7 @@ pub(crate) mod kda_mla_exec;
 mod kda_op;
 mod kimi_mla_closure;
 mod kimi_moe_closure;
+mod lfm3;
 pub(crate) mod mamba2;
 mod mla_op;
 mod plan;

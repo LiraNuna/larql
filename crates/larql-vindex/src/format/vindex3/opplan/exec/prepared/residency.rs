@@ -389,6 +389,12 @@ impl PreparedOperands {
                     }
                     census.glue.widened_f32 += ops.glue_bytes();
                 }
+                PreparedAttention::ShortConv(ops) => {
+                    for w in ops.loaded_matrices() {
+                        census.delta.add(w);
+                    }
+                    census.glue.widened_f32 += ops.glue_bytes();
+                }
             }
             if let Some(ffn) = &layer.ffn {
                 for w in ffn.loaded_matrices() {
@@ -458,6 +464,9 @@ impl PreparedOperands {
                 }
                 PreparedAttention::Kda(ops) => ops.loaded_matrices().iter().for_each(|w| add(w)),
                 PreparedAttention::Mla(ops) => ops.loaded_matrices().iter().for_each(|w| add(w)),
+                PreparedAttention::ShortConv(ops) => {
+                    ops.loaded_matrices().iter().for_each(|w| add(w))
+                }
             }
             if let Some(ffn) = &layer.ffn {
                 ffn.loaded_matrices().iter().for_each(|w| add(w));
@@ -495,6 +504,9 @@ impl PreparedOperands {
                 }
                 PreparedAttention::Kda(ops) => ops.loaded_matrices().iter().for_each(|w| add(w)),
                 PreparedAttention::Mla(ops) => ops.loaded_matrices().iter().for_each(|w| add(w)),
+                PreparedAttention::ShortConv(ops) => {
+                    ops.loaded_matrices().iter().for_each(|w| add(w))
+                }
             }
             if let Some(ffn) = &layer.ffn {
                 ffn.loaded_matrices().iter().for_each(|w| add(w));

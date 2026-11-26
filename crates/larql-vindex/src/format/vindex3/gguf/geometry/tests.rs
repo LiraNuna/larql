@@ -268,6 +268,7 @@ fn model_geometry_comes_from_the_surface_and_names_what_it_lacks() {
         activation: GateActivation::Sigmoid,
         combine: GateCombine::ElementwiseMultiply,
         placement: GatePlacement::AfterAggregationBeforeOutputProjection,
+        granularity: larql_models::config::GateGranularity::PerElement,
     });
     assert_eq!(
         ModelGeometry::from_surface(&surface, 5120).unwrap(),

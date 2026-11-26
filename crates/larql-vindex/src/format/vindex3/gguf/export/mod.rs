@@ -167,6 +167,7 @@ fn roles_from_plan(plan: &ComponentOpPlan) -> Result<RoleMap, VindexError> {
                         LayerAttention::Mla(_) => "MLA",
                         LayerAttention::Mamba2(_) => "Mamba2",
                         LayerAttention::ConvQkv(_) => "conv-QKV attention",
+                        LayerAttention::ShortConv(_) => "ShortConv",
                         _ => "an unnamed operator",
                     }
                 )))

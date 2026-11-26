@@ -20,6 +20,25 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The width the gate projection emits and how it multiplies the aggregated
+/// attention heads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateGranularity {
+    /// `[num_q_heads * head_dim, hidden]` — one gate per head element.
+    #[default]
+    PerElement,
+    /// `[num_q_heads, hidden]` — one scalar gate per query head, broadcast
+    /// across `head_dim` (LFM3 `self_attn.gate_proj`).
+    PerHead,
+}
+
+impl GateGranularity {
+    pub const fn is_per_element(&self) -> bool {
+        matches!(self, Self::PerElement)
+    }
+}
+
 /// The fully judged semantics of one attention output gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttentionGateSpec {
@@ -27,6 +46,11 @@ pub struct AttentionGateSpec {
     pub activation: GateActivation,
     pub combine: GateCombine,
     pub placement: GatePlacement,
+    /// Element-wise (`[num_q_heads * head_dim, hidden]`) vs per-head scalar
+    /// (`[num_q_heads, hidden]`, broadcast across `head_dim`). Omitted in JSON
+    /// when `PerElement` so existing container manifests stay byte-identical.
+    #[serde(default, skip_serializing_if = "GateGranularity::is_per_element")]
+    pub granularity: GateGranularity,
 }
 
 impl AttentionGateSpec {
@@ -50,6 +74,24 @@ impl AttentionGateSpec {
             activation: GateActivation::Sigmoid,
             combine: GateCombine::ElementwiseMultiply,
             placement: GatePlacement::AfterAggregationBeforeOutputProjection,
+            granularity: GateGranularity::PerElement,
+        }
+    }
+
+    /// LFM3's per-head scalar attention output gate (`Lfm3Attention.forward`):
+    ///
+    /// ```text
+    /// gate = sigmoid(gate_proj(hidden_states)).unsqueeze(-1)  # [B, T, Hq, 1]
+    /// attn_output = (attn_output * gate).reshape(B, T, -1)    # broadcast across head_dim
+    /// attn_output = o_proj(attn_output)
+    /// ```
+    pub const fn from_attention_input_per_head_sigmoid_before_output_projection() -> Self {
+        Self {
+            source: GateSource::AttentionInput,
+            activation: GateActivation::Sigmoid,
+            combine: GateCombine::ElementwiseMultiply,
+            placement: GatePlacement::AfterAggregationBeforeOutputProjection,
+            granularity: GateGranularity::PerHead,
         }
     }
 }
@@ -144,11 +186,20 @@ mod tests {
             activation: GateActivation::Sigmoid,
             combine: GateCombine::ElementwiseMultiply,
             placement: GatePlacement::AfterAggregationBeforeOutputProjection,
+            granularity: GateGranularity::PerElement,
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert!(json.contains("\"sigmoid\""));
         assert!(json.contains("\"attention_input\""));
+        assert!(!json.contains("granularity"));
         let back: AttentionGateSpec = serde_json::from_str(&json).unwrap();
         assert_eq!(back, spec);
+
+        let per_head =
+            AttentionGateSpec::from_attention_input_per_head_sigmoid_before_output_projection();
+        let json = serde_json::to_string(&per_head).unwrap();
+        assert!(json.contains("\"per_head\""));
+        let back: AttentionGateSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, per_head);
     }
 }

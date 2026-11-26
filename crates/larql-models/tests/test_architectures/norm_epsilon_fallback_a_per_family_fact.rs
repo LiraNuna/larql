@@ -16,7 +16,7 @@ use super::*;
 fn norm_eps_fallback_is_pinned_per_family() {
     const EPS_1E6: f32 = 1e-6;
     const EPS_1E5: f32 = 1e-5;
-    let cases: [(serde_json::Value, f32); 9] = [
+    let cases: [(serde_json::Value, f32); 10] = [
         (
             serde_json::json!({"model_type": "llama", "hidden_size": 64, "num_hidden_layers": 2, "intermediate_size": 128, "num_attention_heads": 4, "num_key_value_heads": 2}),
             EPS_1E6,
@@ -52,6 +52,10 @@ fn norm_eps_fallback_is_pinned_per_family() {
         ),
         (
             serde_json::json!({"model_type": "starcoder2", "hidden_size": 64, "num_hidden_layers": 2, "intermediate_size": 128, "num_attention_heads": 4, "num_key_value_heads": 2}),
+            EPS_1E5,
+        ),
+        (
+            serde_json::json!({"model_type": "lfm3", "hidden_size": 64, "num_hidden_layers": 4, "intermediate_size": 128, "num_attention_heads": 4, "num_key_value_heads": 2}),
             EPS_1E5,
         ),
     ];

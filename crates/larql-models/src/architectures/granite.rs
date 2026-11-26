@@ -378,6 +378,9 @@ mod tests {
             mtp_use_dedicated_embeddings: None,
             mrope_interleaved: None,
             mrope_section: None,
+            conv_l_cache: None,
+            conv_bias: None,
+            use_sandwich_norm: None,
         }
     }
 

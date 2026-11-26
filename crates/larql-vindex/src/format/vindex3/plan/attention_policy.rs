@@ -30,6 +30,8 @@ pub(super) struct AttentionCensus {
     pub kda: usize,
     /// Mamba2/SSD recurrences.
     pub mamba2: usize,
+    /// Short gated depthwise-conv1d recurrences.
+    pub short_conv: usize,
     /// Recurrences it cannot identify.
     pub unidentified_recurrence: usize,
     /// Declared spellings outside every vocabulary.
@@ -48,6 +50,7 @@ impl AttentionCensus {
         let gated_delta = table.iter().filter(|l| l.operator.is_gated_delta()).count();
         let kda = table.iter().filter(|l| l.operator.is_kda()).count();
         let mamba2 = table.iter().filter(|l| l.operator.is_mamba2()).count();
+        let short_conv = table.iter().filter(|l| l.operator.is_short_conv()).count();
         let unidentified_recurrence = table
             .iter()
             .filter(|l| l.operator.is_unidentified_recurrence())
@@ -70,11 +73,13 @@ impl AttentionCensus {
                 - gated_delta
                 - kda
                 - mamba2
+                - short_conv
                 - unidentified_recurrence
                 - unexpressed,
             gated_delta,
             kda,
             mamba2,
+            short_conv,
             unidentified_recurrence,
             unexpressed,
             nope: table
@@ -116,6 +121,7 @@ impl AttentionCensus {
             gated_delta,
             kda,
             mamba2,
+            short_conv,
             unidentified_recurrence,
             unexpressed,
             nope,
@@ -132,6 +138,9 @@ impl AttentionCensus {
         }
         if mamba2 > 0 {
             detail.push_str(&format!(" / {mamba2} Mamba2 recurrent"));
+        }
+        if short_conv > 0 {
+            detail.push_str(&format!(" / {short_conv} short-conv recurrent"));
         }
         if unidentified_recurrence > 0 {
             detail.push_str(&format!(

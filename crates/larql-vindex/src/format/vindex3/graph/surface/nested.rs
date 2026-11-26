@@ -115,6 +115,7 @@ pub fn surface_from_nested(
         mla: None,
         mamba2: None,
         conv_qkv: None,
+        short_conv: None,
         residual_in_fp32: None,
         attention: Some(AttentionSurface {
             num_q_heads: heads,

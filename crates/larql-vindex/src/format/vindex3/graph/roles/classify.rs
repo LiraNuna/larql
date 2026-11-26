@@ -128,6 +128,17 @@ pub(super) const CONV_QKV_ROLE_TABLE: &[(&str, OperandRole)] = &[
     ("norm.weight", OperandRole::Mamba2PreMixerNorm),
 ];
 
+/// Suffix → role **on a ShortConv layer**, consulted before [`ROLE_TABLE`].
+/// Every non-conv operand (norms, dense FFN) falls through to `ROLE_TABLE`.
+pub(super) const SHORT_CONV_ROLE_TABLE: &[(&str, OperandRole)] = &[
+    ("conv.in_proj.weight", OperandRole::ShortConvInProj),
+    ("conv.in_proj.bias", OperandRole::ShortConvInProjBias),
+    ("conv.conv.weight", OperandRole::ShortConvWeight),
+    ("conv.conv.bias", OperandRole::ShortConvBias),
+    ("conv.out_proj.weight", OperandRole::ShortConvOutProj),
+    ("conv.out_proj.bias", OperandRole::ShortConvOutProjBias),
+];
+
 /// Split a stack tensor's object-relative name into its layer index and
 /// the suffix every role table matches on. `None` when the name is not
 /// layer-shaped, which is what makes a bare top-level tensor under a
@@ -211,6 +222,14 @@ pub fn classify_stack_tensor_on(
             return Some((layer, *role));
         }
     }
+    if operator.is_short_conv() {
+        if let Some((_, role)) = SHORT_CONV_ROLE_TABLE
+            .iter()
+            .find(|(name, _)| *name == suffix)
+        {
+            return Some((layer, *role));
+        }
+    }
     if let Some(role) = ROLE_TABLE
         .iter()
         .find(|(name, _)| *name == suffix)
@@ -256,7 +275,9 @@ pub fn norm_placement_evidence<'a>(
     }
     match (pre_attention, post_attention, pre_ffn, post_ffn) {
         (true, true, true, true) => Ok(NormPlacement::PrePost),
-        (true, true, false, false) => Ok(NormPlacement::PreOnly),
+        // Two-norm pre-only: either Llama's overloaded `(input_layernorm,
+        // post_attention_layernorm)` or explicit `(operator_norm, ffn_norm)`.
+        (true, true, false, false) | (true, false, true, false) => Ok(NormPlacement::PreOnly),
         // Both wrap norms present, neither pre-norm: the sublayer reads
         // the raw residual. See [`NormPlacement::PostOnly`].
         (false, true, false, true) => Ok(NormPlacement::PostOnly),

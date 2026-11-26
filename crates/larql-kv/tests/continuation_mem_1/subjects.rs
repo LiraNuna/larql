@@ -89,6 +89,9 @@ impl Subject {
                     LayerAttention::Mamba2(_) => &[mamba2::CONV_HISTORY],
                     LayerAttention::GatedDelta(_) => &[gated_delta::CONV_HISTORY],
                     LayerAttention::Kda(_) => &[kda::CONV_Q, kda::CONV_K, kda::CONV_V],
+                    LayerAttention::ShortConv(_) => {
+                        &[larql_vindex::format::vindex3::opplan::exec::short_conv::CONV_STATE]
+                    }
                     _ => return None,
                 };
                 Some(

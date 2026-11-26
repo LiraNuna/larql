@@ -169,6 +169,7 @@ impl Attention for QwenArch {
                 activation: GateActivation::Sigmoid,
                 combine: GateCombine::ElementwiseMultiply,
                 placement: GatePlacement::AfterAggregationBeforeOutputProjection,
+                granularity: crate::config::GateGranularity::PerElement,
             })
     }
 

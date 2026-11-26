@@ -65,6 +65,8 @@ pub(super) fn required_roles(ops: &LayerOps) -> Vec<OperandRole> {
     // checkpoint correctly never shipped.
     let mut roles = if ops.placement == NormPlacement::PostOnly {
         vec![OperandRole::PostAttentionNorm]
+    } else if ops.placement == NormPlacement::PreOnly && ops.pre_ffn_explicit {
+        vec![OperandRole::PreAttentionNorm, OperandRole::PreFfnNorm]
     } else {
         vec![
             OperandRole::PreAttentionNorm,
@@ -170,6 +172,19 @@ pub(super) fn required_roles(ops: &LayerOps) -> Vec<OperandRole> {
         }
         if ops.mla_output_gate {
             roles.push(OperandRole::MlaOutputGate);
+        }
+    } else if ops.operator.is_short_conv() {
+        roles.extend([
+            OperandRole::ShortConvInProj,
+            OperandRole::ShortConvWeight,
+            OperandRole::ShortConvOutProj,
+        ]);
+        if ops.short_conv.is_some_and(|s| s.conv_bias) {
+            roles.extend([
+                OperandRole::ShortConvInProjBias,
+                OperandRole::ShortConvBias,
+                OperandRole::ShortConvOutProjBias,
+            ]);
         }
     } else {
         roles.extend([OperandRole::AttnQ, OperandRole::AttnK, OperandRole::AttnO]);

@@ -217,6 +217,19 @@ pub enum OperandRole {
     ConvQkvConv1dBias,
     /// Output projection, `[hidden, Hq·Dh]`.
     ConvQkvOutProj,
+    /// Short-convolution recurrence operands (LFM3 `conv` layers).
+    /// Fused B|C|x input projection, `[3·hidden, hidden]`.
+    ShortConvInProj,
+    /// Optional additive bias on `in_proj`, `[3·hidden]` — required iff `conv_bias`.
+    ShortConvInProjBias,
+    /// Causal depthwise 1D convolution kernel, `[hidden, 1, conv_l_cache]`.
+    ShortConvWeight,
+    /// Optional additive bias on `conv`, `[hidden]` — required iff `conv_bias`.
+    ShortConvBias,
+    /// Output projection, `[hidden, hidden]`.
+    ShortConvOutProj,
+    /// Optional additive bias on `out_proj`, `[hidden]` — required iff `conv_bias`.
+    ShortConvOutProjBias,
     /// The single pre-mixer norm of a mixer-only layer
     /// (`backbone.layers.N.norm.weight`), `[hidden]`. Its own role rather
     /// than [`Self::PreAttentionNorm`]: a mixer-only stack has ONE norm

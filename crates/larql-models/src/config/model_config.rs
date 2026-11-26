@@ -549,4 +549,11 @@ pub struct ModelConfig {
     /// mRoPE per-axis section widths (`rope_parameters.mrope_section`),
     /// verbatim.
     pub mrope_section: Option<Vec<usize>>,
+    /// Short-conv depthwise causal kernel width (`conv_L_cache`, 7 on LFM3).
+    pub conv_l_cache: Option<usize>,
+    /// Whether short-conv projections and depthwise conv carry biases (`conv_bias`).
+    pub conv_bias: Option<bool>,
+    /// Whether decoder layers apply post-operator and post-FFN RMSNorms before
+    /// the residual adds (`use_sandwich_norm`, `true` on LFM3-1.7B).
+    pub use_sandwich_norm: Option<bool>,
 }

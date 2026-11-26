@@ -23,9 +23,9 @@ pub use config::{
 pub use config::{
     Activation, ExpertFormat, ExpertGatePolicy, ExpertRoutingPolicy, FfnType, GateUpBranch,
     GateUpLayout, Llama3RopeScaling, ModelArchitecture, ModelConfig, MoeRouterKind, NormType,
-    QkNormScope, RopeScaling, YarnRopeScaling, LAYER_TYPE_FULL_ATTENTION,
-    LAYER_TYPE_SLIDING_ATTENTION, LAYER_TYPE_WINDOW_ATTENTION, ROPE_TYPE_DEFAULT, ROPE_TYPE_LINEAR,
-    ROPE_TYPE_LLAMA3, ROPE_TYPE_YARN,
+    QkNormScope, RopeScaling, ShortConvGeometry, YarnRopeScaling, LAYER_TYPE_CONV,
+    LAYER_TYPE_FULL_ATTENTION, LAYER_TYPE_SLIDING_ATTENTION, LAYER_TYPE_WINDOW_ATTENTION,
+    ROPE_TYPE_DEFAULT, ROPE_TYPE_LINEAR, ROPE_TYPE_LLAMA3, ROPE_TYPE_YARN,
 };
 pub use detect::{
     detect_architecture, detect_architecture_validated, detect_from_json,
@@ -45,6 +45,7 @@ pub use architectures::generic::GenericArch;
 pub use architectures::gpt2::Gpt2Arch;
 pub use architectures::gpt_oss::GptOssArch;
 pub use architectures::granite::GraniteArch;
+pub use architectures::lfm3::Lfm3Arch;
 pub use architectures::llama::LlamaArch;
 pub use architectures::mistral::MistralArch;
 pub use architectures::mixtral::MixtralArch;

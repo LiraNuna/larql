@@ -1,7 +1,7 @@
 //! Per-layer attention policy as the graph records it.
 
 use larql_models::config::{
-    PositionPolicy, LAYER_TYPE_FULL_ATTENTION, LAYER_TYPE_LINEAR_ATTENTION,
+    PositionPolicy, LAYER_TYPE_CONV, LAYER_TYPE_FULL_ATTENTION, LAYER_TYPE_LINEAR_ATTENTION,
     LAYER_TYPE_SLIDING_ATTENTION, LAYER_TYPE_WINDOW_ATTENTION,
 };
 use serde::{Deserialize, Serialize};
@@ -21,6 +21,8 @@ pub enum RecurrenceKind {
     Kda,
     /// The Mamba2/SSD geometry (`state_size`, `num_heads`, `expand`, …).
     Mamba2,
+    /// Short gated depthwise-conv1d recurrence (`conv_L_cache`, `conv_bias`).
+    ShortConv,
 }
 
 /// Which attention-class operator a layer runs.
@@ -124,6 +126,11 @@ pub enum LayerOperator {
     /// is a KV cache AND a conv history — the first operator to declare
     /// both. Observed on OuteAI Mamba2Attn (4 of 32 layers).
     ConvQkvAttention,
+    /// Short gated causal depthwise-conv1d recurrence: fused `in_proj`
+    /// emitting `(B, C, x)`, causal depthwise conv1d of width `L_cache`
+    /// over `B * x`, multiplicative output gate `C * conv_out`, and
+    /// `out_proj`. Paired with standard transformer norms and dense FFN.
+    ShortConv,
 }
 
 impl LayerOperator {
@@ -163,7 +170,8 @@ impl LayerOperator {
             // but two facts the container could not carry: KDA's state
             // precision and MLA's latent-norm epsilon.
             | Self::Kda
-            | Self::Mla => true,
+            | Self::Mla
+            | Self::ShortConv => true,
             // Still false, and for the reason the variant exists: nothing
             // identified WHICH recurrence this is, so there is no
             // operator to run.
@@ -174,6 +182,11 @@ impl LayerOperator {
     /// Whether this layer runs the Mamba2/SSD mixer.
     pub fn is_mamba2(&self) -> bool {
         matches!(self, Self::Mamba2)
+    }
+
+    /// Whether this layer runs the short gated depthwise-conv1d recurrence.
+    pub fn is_short_conv(&self) -> bool {
+        matches!(self, Self::ShortConv)
     }
 
     /// Whether this layer runs Kimi Delta Attention.
@@ -197,7 +210,7 @@ impl LayerOperator {
     pub fn is_recurrent(&self) -> bool {
         matches!(
             self,
-            Self::GatedDelta | Self::Kda | Self::Mamba2 | Self::Recurrent
+            Self::GatedDelta | Self::Kda | Self::Mamba2 | Self::ShortConv | Self::Recurrent
         )
     }
 
@@ -356,6 +369,7 @@ impl AttentionLayerPolicy {
             LayerOperator::GatedDelta | LayerOperator::Kda | LayerOperator::Mamba2 => {
                 Some(LAYER_TYPE_LINEAR_ATTENTION)
             }
+            LayerOperator::ShortConv => Some(LAYER_TYPE_CONV),
             // An unidentified recurrence has no executable spelling to
             // round-trip to. Answering `linear_attention` here would make
             // `matches_declaration` true and hide the layer inside the
@@ -426,7 +440,14 @@ pub fn resolve_layer_kind(
                 Some(RecurrenceKind::GatedDelta) => LayerOperator::GatedDelta,
                 Some(RecurrenceKind::Kda) => LayerOperator::Kda,
                 Some(RecurrenceKind::Mamba2) => LayerOperator::Mamba2,
-                None => LayerOperator::Recurrent,
+                Some(RecurrenceKind::ShortConv) | None => LayerOperator::Recurrent,
+            },
+            None,
+        ),
+        Some(raw) if raw.eq_ignore_ascii_case(LAYER_TYPE_CONV) => (
+            match recurrence {
+                Some(RecurrenceKind::ShortConv) => LayerOperator::ShortConv,
+                _ => LayerOperator::Recurrent,
             },
             None,
         ),

@@ -95,14 +95,19 @@ pub(super) fn check_layer_closure(c: LayerClosureInputs<'_>, defects: &mut Vec<C
                 gated_ffn,
                 // A fused gate ships no operand of its own — demanding
                 // one would make every Qwen3.8 layer a closure defect for
-                // a tensor that correctly does not exist.
-                output_gate: matches!(
-                    attn.and_then(|a| a.output_gate).map(|g| g.source),
-                    Some(larql_models::config::GateSource::AttentionInput)
-                ),
-                attention_bias: attn.and_then(|a| a.attention_bias) == Some(true),
-                qkv_bias: attn.and_then(|a| a.qkv_bias) == Some(true),
-                sinks: attn.is_some_and(|a| a.sinks.is_some()),
+                // a tensor that correctly does not exist. Softmax-specific
+                // switches apply only on softmax layers.
+                output_gate: policy.operator == LayerOperator::Softmax
+                    && matches!(
+                        attn.and_then(|a| a.output_gate).map(|g| g.source),
+                        Some(larql_models::config::GateSource::AttentionInput)
+                    ),
+                attention_bias: policy.operator == LayerOperator::Softmax
+                    && attn.and_then(|a| a.attention_bias) == Some(true),
+                qkv_bias: policy.operator == LayerOperator::Softmax
+                    && attn.and_then(|a| a.qkv_bias) == Some(true),
+                sinks: policy.operator == LayerOperator::Softmax
+                    && attn.is_some_and(|a| a.sinks.is_some()),
                 // Both gates are DECLARED facts (K3-REP-GATE-1): the KDA
                 // gate's form and the MLA gate's presence come from the
                 // surface, never from which `g_proj` spelling the layer
@@ -115,6 +120,12 @@ pub(super) fn check_layer_closure(c: LayerClosureInputs<'_>, defects: &mut Vec<C
                 moe: ffn_moe,
                 mamba2: surface.mamba2,
                 conv_qkv: surface.conv_qkv,
+                short_conv: surface.short_conv,
+                pre_ffn_explicit: placement == NormPlacement::PreOnly
+                    && present.is_some_and(|s| {
+                        s.contains_key(&OperandRole::PreFfnNorm)
+                            && !s.contains_key(&OperandRole::PostAttentionNorm)
+                    }),
                 v_from_k: policy.v_from_k,
                 hyper_connection: hyper_connection.is_some(),
                 attention_residual,

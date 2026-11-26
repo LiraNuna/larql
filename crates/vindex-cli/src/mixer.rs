@@ -86,6 +86,7 @@ pub fn label(operator: LayerOperator, output_gate: bool) -> &'static str {
         // plain softmax, and kept as ATTENTION because it still attends
         // and still caches.
         LayerOperator::ConvQkvAttention => "CONV-QKV ATTENTION",
+        LayerOperator::ShortConv => "SHORT CONV",
         // The schema's own word for a declared recurrence whose family
         // nothing identified. Renaming it to any operator would invent
         // the fact the variant exists to withhold.
@@ -220,6 +221,21 @@ pub fn operands(operator: LayerOperator, layer: &LayerPlan) -> MixerOperands {
             ops.push(("output projection", m.out_proj.clone()));
             MixerOperands::Named(ops)
         }
+        (LayerOperator::ShortConv, LayerAttention::ShortConv(s)) => {
+            let mut ops = vec![("fused in-projection B|C|x", s.in_proj.clone())];
+            if let Some(b) = &s.in_proj_bias {
+                ops.push(("in-projection bias", b.clone()));
+            }
+            ops.push(("causal depthwise conv", s.conv_weight.clone()));
+            if let Some(b) = &s.conv_bias {
+                ops.push(("conv bias", b.clone()));
+            }
+            ops.push(("output projection", s.out_proj.clone()));
+            if let Some(b) = &s.out_proj_bias {
+                ops.push(("output projection bias", b.clone()));
+            }
+            MixerOperands::Named(ops)
+        }
         // Declared, not identified: there is no operand vocabulary to
         // print, and inventing one from whatever the plan bound is the
         // original defect wearing a different hat.
@@ -245,6 +261,7 @@ fn bound_name(attention: &LayerAttention) -> &'static str {
         LayerAttention::Mla(_) => "MLA",
         LayerAttention::Mamba2(_) => "MAMBA2",
         LayerAttention::ConvQkv(_) => "CONV-QKV ATTENTION",
+        LayerAttention::ShortConv(_) => "SHORT CONV",
     }
 }
 

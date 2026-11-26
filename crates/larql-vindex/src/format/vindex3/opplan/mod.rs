@@ -31,6 +31,7 @@ pub mod kda;
 pub mod mamba2;
 pub mod mla;
 pub mod planned;
+pub mod short_conv;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -40,6 +41,7 @@ pub use gated_delta::GatedDeltaOp;
 pub use kda::{KdaOp, KdaOutputGate};
 pub use mamba2::Mamba2Op;
 pub use mla::{MlaOp, MlaQueryProjection};
+pub use short_conv::ShortConvOp;
 
 mod layer;
 mod ops;
