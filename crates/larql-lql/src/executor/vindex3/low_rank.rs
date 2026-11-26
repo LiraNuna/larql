@@ -1,9 +1,12 @@
 //! `ADD LOW RANK`: stage a structured `add_low_rank_columns` (VLP numerics v2) on the bound VINDEX3 container.
 
+use std::path::{Path, PathBuf};
+
 use larql_vindex::format::vindex3::weight_patch::structured::{OperandBits, Profile};
 use larql_vindex::format::vindex3::weight_patch::LowRankColumnsOp;
 use serde::Deserialize;
 
+use super::npy::{read_npy_floats, NpyFloatData};
 use crate::error::LqlError;
 use crate::executor::{Backend, Session};
 
@@ -11,15 +14,24 @@ use crate::executor::{Backend, Session};
 const F64_HEX_DIGITS: usize = 16;
 const F32_HEX_DIGITS: usize = 8;
 
-/// The operand file an `ADD LOW RANK` reads: the rank, both factors as stored bits in the profile's working
-/// width, and optionally where they came from. Bits, never decimals: the file fixes the operands exactly.
+/// One factor inside a JSON `ADD LOW RANK` operand file: either an array of fixed-width lowercase
+/// hex strings (exact bits) or a path to a C-order `<f4`/`<f8` `.npy` file.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FactorSpec {
+    Hex(Vec<String>),
+    NpyPath(String),
+}
+
+/// The operand file an `ADD LOW RANK` reads: the rank, both factors as stored bits (or `.npy` file
+/// paths) in the profile's working width, and optionally where they came from.
 /// `a` is `rows × rank` and `b` is `rank × |columns|`, both row-major.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LowRankFile {
     rank: usize,
-    a: Vec<String>,
-    b: Vec<String>,
+    a: FactorSpec,
+    b: FactorSpec,
     #[serde(default)]
     origin: Option<String>,
 }
@@ -184,7 +196,7 @@ impl Session {
         })
     }
 
-    /// `ADD LOW RANK`: the operand file is read and parsed, then staged by [`Self::stage_low_rank`].
+    /// `ADD LOW RANK`: the operand file (`.json` or `.npy`) is read and parsed, then staged by [`Self::stage_low_rank`].
     pub(crate) fn exec_add_low_rank(
         &mut self,
         operands: &str,
@@ -194,19 +206,40 @@ impl Session {
     ) -> Result<Vec<String>, LqlError> {
         vindex3_path(self)?;
         let profile = Profile::parse(Some(numerics)).map_err(refused)?;
-        let text = std::fs::read_to_string(operands)
-            .map_err(|e| refused(format!("cannot read operand file {operands:?}: {e}")))?;
-        let file: LowRankFile = serde_json::from_str(&text)
-            .map_err(|e| refused(format!("operand file {operands:?}: {e}")))?;
-        let a = operand_bits(&file.a, profile.works_in_f64(), "a")?;
-        let b = operand_bits(&file.b, profile.works_in_f64(), "b")?;
-        let staged =
-            self.stage_low_rank(tensor, columns, numerics, file.rank, &a, &b, file.origin)?;
+        let (rank, a, b, origin) = if Path::new(operands)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("npy"))
+        {
+            load_direct_npy_low_rank(
+                Path::new(operands),
+                operands,
+                columns.len(),
+                numerics,
+                &profile,
+            )?
+        } else {
+            let text = std::fs::read_to_string(operands)
+                .map_err(|e| refused(format!("cannot read operand file {operands:?}: {e}")))?;
+            let file: LowRankFile = serde_json::from_str(&text)
+                .map_err(|e| refused(format!("operand file {operands:?}: {e}")))?;
+            let base_dir = Path::new(operands).parent();
+            let (a, a_note) = load_factor_spec(&file.a, base_dir, numerics, &profile, "a")?;
+            let (b, b_note) = load_factor_spec(&file.b, base_dir, numerics, &profile, "b")?;
+            let origin = match (file.origin, a_note, b_note) {
+                (Some(o), _, _) => Some(o),
+                (None, Some(an), Some(bn)) => Some(format!("json:{operands} ({an}; {bn})")),
+                (None, Some(note), None) | (None, None, Some(note)) => {
+                    Some(format!("json:{operands} ({note})"))
+                }
+                (None, None, None) => None,
+            };
+            (file.rank, a, b, origin)
+        };
+        let staged = self.stage_low_rank(tensor, columns, numerics, rank, &a, &b, origin)?;
         let mut out = vec![
             format!(
-                "Staged: add rank-{} update to {tensor}, {} column(s) {}..={} under {numerics}; \
+                "Staged: add rank-{rank} update to {tensor}, {} column(s) {}..={} under {numerics}; \
                  {} element(s) would change",
-                file.rank,
                 columns.len(),
                 columns.first().copied().unwrap_or_default(),
                 columns.last().copied().unwrap_or_default(),
@@ -226,4 +259,122 @@ impl Session {
         out.extend(staged.live);
         Ok(out)
     }
+}
+
+fn load_factor_spec(
+    spec: &FactorSpec,
+    base_dir: Option<&Path>,
+    numerics: &str,
+    profile: &Profile,
+    which: &str,
+) -> Result<(OperandBits, Option<String>), LqlError> {
+    match spec {
+        FactorSpec::Hex(hex) => Ok((operand_bits(hex, profile.works_in_f64(), which)?, None)),
+        FactorSpec::NpyPath(raw) => {
+            let resolved = resolve_factor_path(raw, base_dir);
+            let npy = read_npy_floats(&resolved).map_err(refused)?;
+            let dtype = npy.data.dtype_label();
+            let bits = npy_data_to_bits(&npy.data, numerics, which)?;
+            let note = format!(
+                "{which}=npy:{raw} shape={:?} dtype={dtype} sha256={}",
+                npy.shape, npy.sha256
+            );
+            Ok((bits, Some(note)))
+        }
+    }
+}
+
+fn resolve_factor_path(raw: &str, base_dir: Option<&Path>) -> PathBuf {
+    let p = Path::new(raw);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    if let Some(dir) = base_dir {
+        let candidate = dir.join(p);
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    p.to_path_buf()
+}
+
+fn npy_data_to_bits(
+    data: &NpyFloatData,
+    numerics: &str,
+    which: &str,
+) -> Result<OperandBits, LqlError> {
+    match data {
+        NpyFloatData::F64(v) => operand_bits_from_values(numerics, OperandValues::F64(v), which),
+        NpyFloatData::F32(v) => operand_bits_from_values(numerics, OperandValues::F32(v), which),
+    }
+}
+
+/// Interpret a direct `.npy` file passed to `ADD LOW RANK`:
+/// - 1D `[rows]` (or singleton-prefixed `[1, rows]` / `[1, 1, rows]`): rank-1 update with
+///   `a = vec` (`rows × 1`) and `b = [1.0; n_cols]` (`1 × n_cols`).
+/// - 2D `[rows, n_cols]` (or `[1, rows, n_cols]`): exact column delta matrix with
+///   `rank = n_cols`, `a = mat` (`rows × n_cols`), and `b = I` (`n_cols × n_cols`).
+fn load_direct_npy_low_rank(
+    path: &Path,
+    display: &str,
+    n_cols: usize,
+    numerics: &str,
+    profile: &Profile,
+) -> Result<(usize, OperandBits, OperandBits, Option<String>), LqlError> {
+    if n_cols == 0 {
+        return Err(refused("COLUMNS must not be empty"));
+    }
+    let npy = read_npy_floats(path).map_err(refused)?;
+    let dtype = npy.data.dtype_label();
+    // Strip leading singleton dimensions (e.g. CAPTURE `[1, hidden]` -> `[hidden]`).
+    let mut trimmed = npy.shape.as_slice();
+    while trimmed.len() > 1 && trimmed[0] == 1 {
+        trimmed = &trimmed[1..];
+    }
+    let a = npy_data_to_bits(&npy.data, numerics, "a")?;
+    let (rank, b) = match trimmed {
+        [_rows] => {
+            let b = if profile.works_in_f64() {
+                OperandBits::F64(vec![1.0f64.to_bits(); n_cols])
+            } else {
+                OperandBits::F32(vec![1.0f32.to_bits(); n_cols])
+            };
+            (1usize, b)
+        }
+        [_rows, cols] if *cols == n_cols => {
+            let rank = n_cols;
+            if rank > 256 {
+                return Err(refused(format!(
+                    "2D .npy matrix {display:?} has {rank} columns, exceeding max rank 256; \
+                     pass a JSON file referencing factored `a` and `b` .npy arrays"
+                )));
+            }
+            let b = if profile.works_in_f64() {
+                let mut id = vec![0.0f64.to_bits(); rank * rank];
+                for i in 0..rank {
+                    id[i * rank + i] = 1.0f64.to_bits();
+                }
+                OperandBits::F64(id)
+            } else {
+                let mut id = vec![0.0f32.to_bits(); rank * rank];
+                for i in 0..rank {
+                    id[i * rank + i] = 1.0f32.to_bits();
+                }
+                OperandBits::F32(id)
+            };
+            (rank, b)
+        }
+        _ => {
+            return Err(refused(format!(
+                "operand .npy file {display:?} has shape {:?}; expected [rows] (rank-1 broadcast \
+                 to {n_cols} column(s)) or [rows, {n_cols}] (per-column delta matrix)",
+                npy.shape
+            )));
+        }
+    };
+    let origin = format!(
+        "npy:{display} shape={:?} dtype={dtype} sha256={}",
+        npy.shape, npy.sha256
+    );
+    Ok((rank, a, b, Some(origin)))
 }

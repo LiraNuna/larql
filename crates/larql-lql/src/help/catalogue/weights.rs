@@ -94,7 +94,7 @@ pub(super) static REMOVE_DIRECTION: StatementHelp = StatementHelp {
     aliases: &[],
     group: HelpGroup::Weights,
     syntax: &[
-        "REMOVE DIRECTION \"<operand.json>\" FROM \"<tensor>\" COLUMNS (<n>, ...) SCALE <number> NUMERICS \"<profile>\";",
+        "REMOVE DIRECTION \"<operand.json | vec.npy>\" FROM \"<tensor>\" COLUMNS (<n>, ...) SCALE <number> NUMERICS \"<profile>\";",
     ],
     does: &[
         "Stages the removal of a direction u from the chosen columns S of one stored BF16 matrix:",
@@ -104,7 +104,7 @@ pub(super) static REMOVE_DIRECTION: StatementHelp = StatementHelp {
     ],
     examples: &[
         "REMOVE DIRECTION \"u.json\" FROM \"1.mlp.down_proj.weight\" COLUMNS (33, 34) SCALE 0.5 NUMERICS \"f64-seq-rne1/v1\";",
-        "REMOVE DIRECTION \"u.json\" FROM \"1.self_attn.o_proj.weight\" COLUMNS (40) SCALE -1 NUMERICS \"f64-seq-rne2/v1\";",
+        "REMOVE DIRECTION \"u.npy\" FROM \"1.self_attn.o_proj.weight\" COLUMNS (40) SCALE -1 NUMERICS \"f64-seq-rne2/v1\";",
     ],
     needs: &[
         Need::Vindex3,
@@ -113,12 +113,14 @@ pub(super) static REMOVE_DIRECTION: StatementHelp = StatementHelp {
     ],
     effect: STAGED_EFFECT,
     operands: &[
-        "A JSON object: {\"bits\": [\"<hex>\", ...], \"origin\": \"<note>\"}",
+        "Either a C-order `<f4` or `<f8` `.npy` vector (`[rows]` or singleton-prefixed `[1, rows]`",
+        "as written by CAPTURE; `<f4` widens losslessly to f64 bits and stamps the file's SHA-256),",
+        "or a JSON object: {\"bits\": [\"<hex>\", ...], \"origin\": \"<note>\"}",
         "  bits    One string per row of the tensor: that component of u as the bit pattern of an",
         "          f64, exactly 16 lowercase hex digits. \"3ff0000000000000\" is 1.0. Never decimals.",
         "  origin  Optional. Where the direction came from. The op's digest covers it; nothing",
         "          computes with it.",
-        "Any other field is refused.",
+        "Any other JSON field is refused.",
     ],
     refusals: &[
         "NUMERICS other than \"f64-seq-rne1/v1\" or \"f64-seq-rne2/v1\". \"f32-seq-rne1/v1\" is refused here.",
@@ -145,7 +147,7 @@ pub(super) static ADD_LOW_RANK: StatementHelp = StatementHelp {
     aliases: &["ADD", "LOW RANK"],
     group: HelpGroup::Weights,
     syntax: &[
-        "ADD LOW RANK \"<operands.json>\" TO \"<tensor>\" COLUMNS (<n>, ...) NUMERICS \"<profile>\";",
+        "ADD LOW RANK \"<operands.json | delta.npy>\" TO \"<tensor>\" COLUMNS (<n>, ...) NUMERICS \"<profile>\";",
     ],
     does: &[
         "Stages a low-rank update of the chosen columns J of one stored BF16 matrix:",
@@ -155,7 +157,7 @@ pub(super) static ADD_LOW_RANK: StatementHelp = StatementHelp {
     ],
     examples: &[
         "ADD LOW RANK \"a_b.json\" TO \"1.mlp.gate_proj.weight\" COLUMNS (8, 9) NUMERICS \"f64-seq-rne1/v1\";",
-        "ADD LOW RANK \"a_b_f32.json\" TO \"1.self_attn.o_proj.weight\" COLUMNS (0, 1, 2, 63) NUMERICS \"f32-seq-rne1/v1\";",
+        "ADD LOW RANK \"delta.npy\" TO \"1.self_attn.o_proj.weight\" COLUMNS (0, 1, 2, 63) NUMERICS \"f32-seq-rne1/v1\";",
     ],
     needs: &[
         Need::Vindex3,
@@ -164,15 +166,19 @@ pub(super) static ADD_LOW_RANK: StatementHelp = StatementHelp {
     ],
     effect: STAGED_EFFECT,
     operands: &[
-        "A JSON object: {\"rank\": K, \"a\": [\"<hex>\", ...], \"b\": [\"<hex>\", ...], \"origin\": \"<note>\"}",
+        "Either a direct C-order `<f4`/`<f8` `.npy` file (`[rows]` or `[1, rows]` for a rank-1",
+        "update added to every listed column, or `[rows, |COLUMNS|]` for a per-column delta matrix),",
+        "or a JSON object: {\"rank\": K, \"a\": [\"<hex>\", ...], \"b\": [\"<hex>\", ...], \"origin\": \"<note>\"}",
+        "  (where \"a\" and \"b\" may also be `.npy` file path strings instead of hex arrays).",
         "  rank    K, at most 256.",
         "  a       rows x K values, row-major: a[r, k] is at index r * K + k.",
         "  b       K x (number of COLUMNS) values, row-major: b[k, p] is at index k * |COLUMNS| + p.",
         "          b is compact: it covers only the listed columns, in the order listed.",
         "  origin  Optional. The op's digest covers it; nothing computes with it.",
-        "Each value is a bit pattern in the profile's working width, lowercase hex: 16 digits (f64)",
-        "for \"f64-seq-rne1/v1\" and \"f64-seq-rne2/v1\", 8 digits (f32) for \"f32-seq-rne1/v1\".",
-        "Any other field is refused.",
+        "Hex values use lowercase hex of the profile's working width: 16 digits (f64) for",
+        "\"f64-seq-rne1/v1\" and \"f64-seq-rne2/v1\", 8 digits (f32) for \"f32-seq-rne1/v1\".",
+        "`.npy` `<f4` widens losslessly under f64 profiles; `<f8` is refused under f32 profiles.",
+        "Any other JSON field is refused.",
     ],
     refusals: &[
         "NUMERICS that is not one of the three profiles above.",

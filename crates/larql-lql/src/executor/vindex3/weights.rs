@@ -396,24 +396,56 @@ impl Session {
         if !scale.is_finite() {
             return Err(refused_direction("SCALE must be finite"));
         }
-        let text = std::fs::read_to_string(operand)
-            .map_err(|e| refused_direction(format!("cannot read operand file {operand:?}: {e}")))?;
-        let file: OperandFile = serde_json::from_str(&text)
-            .map_err(|e| refused_direction(format!("operand file {operand:?}: {e}")))?;
-        let bits = file
-            .bits
-            .iter()
-            .map(|h| {
-                (h.len() == 16 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
-                    .then(|| u64::from_str_radix(h, 16).ok())
-                    .flatten()
-                    .ok_or_else(|| {
-                        refused_direction(format!(
-                            "`{h}` is not 16 lowercase hex digits (f64 bits)"
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<u64>, _>>()?;
+        let (bits, origin): (Vec<u64>, Option<String>) = if Path::new(operand)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("npy"))
+        {
+            let npy = super::npy::read_npy_floats(Path::new(operand)).map_err(refused_direction)?;
+            let non_singleton: Vec<usize> = npy.shape.iter().copied().filter(|&d| d != 1).collect();
+            let valid_vector = !npy.shape.is_empty()
+                && (non_singleton.len() == 1 || npy.shape.iter().all(|&d| d == 1));
+            if !valid_vector {
+                return Err(refused_direction(format!(
+                    "operand .npy file {operand:?} has shape {:?}; expected a 1D vector [rows] \
+                     (or singleton-prefixed [1, rows] from CAPTURE)",
+                    npy.shape
+                )));
+            }
+            let dtype = npy.data.dtype_label();
+            let bits = match npy.data {
+                super::npy::NpyFloatData::F64(v) => v.iter().map(|x| x.to_bits()).collect(),
+                super::npy::NpyFloatData::F32(v) => {
+                    v.iter().map(|&x| f64::from(x).to_bits()).collect()
+                }
+            };
+            let origin = format!(
+                "npy:{operand} shape={:?} dtype={dtype} sha256={}",
+                npy.shape, npy.sha256
+            );
+            (bits, Some(origin))
+        } else {
+            let text = std::fs::read_to_string(operand).map_err(|e| {
+                refused_direction(format!("cannot read operand file {operand:?}: {e}"))
+            })?;
+            let file: OperandFile = serde_json::from_str(&text)
+                .map_err(|e| refused_direction(format!("operand file {operand:?}: {e}")))?;
+            let bits = file
+                .bits
+                .iter()
+                .map(|h| {
+                    (h.len() == 16 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+                        .then(|| u64::from_str_radix(h, 16).ok())
+                        .flatten()
+                        .ok_or_else(|| {
+                            refused_direction(format!(
+                                "`{h}` is not 16 lowercase hex digits (f64 bits)"
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<u64>, _>>()?;
+            (bits, file.origin)
+        };
+        let n_components = bits.len();
         let mut op = StructuredWeightOp::bind(
             &path,
             tensor,
@@ -423,7 +455,7 @@ impl Session {
             columns.to_vec(),
         )
         .map_err(refused_direction)?;
-        if let Some(origin) = file.origin {
+        if let Some(origin) = origin {
             op = op.with_origin(origin);
         }
         // Resolve now, so a bad op is refused when it is written down and not when it is compiled.
@@ -446,9 +478,8 @@ impl Session {
                 .push(larql_vindex::PatchOp::StructuredWeight(op));
         }
         let mut out = vec![format!(
-            "Staged: remove direction ({} component(s)) from {tensor}, column(s) {columns:?}, scale {scale} under {numerics}; \
+            "Staged: remove direction ({n_components} component(s)) from {tensor}, column(s) {columns:?}, scale {scale} under {numerics}; \
              {} element(s) would change",
-            file.bits.len(),
             resolved.edits.len()
         )];
         out.extend(notice.map(|notice| format!("  note: {notice}")));
