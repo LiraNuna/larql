@@ -210,7 +210,7 @@ pub(super) static DLA: StatementHelp = StatementHelp {
     aliases: &[],
     group: HelpGroup::Run,
     syntax: &[
-        "DLA \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>} [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (<n>, ...)] [TOP <k> [COLUMNS]] [TOP <m> HEADS];",
+        "DLA \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>} [LAYERS <lo>-<hi> | AT LAYER <n> | AT LAYERS (<n>, ...)] [TOP <k> [COLUMNS | NEURONS]] [TOP <m> HEADS] [TOP <c> CHANNELS];",
     ],
     does: &[
         "Computes exact Direct Logit Attribution for logit(token_a) - logit(token_b) at the prompt's",
@@ -219,16 +219,19 @@ pub(super) static DLA: StatementHelp = StatementHelp {
         "avoiding multi-token ambiguity or leading-space confusion.",
         "Decomposes the pre-softcap logit difference additively into embedding + per-layer operator",
         "(attention or ShortConv/mixer) + per-layer FFN contributions using the linearized final norm.",
-        "With TOP <k> COLUMNS, also linearizes each dense FFN's post-FFN norm (and residual/layer scale)",
-        "to attribute each layer's FFN contribution down to individual W_down columns and prints the",
-        "top <k> columns ranked by |Col DLA| across the requested layers.",
+        "With TOP <k> COLUMNS (or TOP <k> NEURONS), linearizes each dense FFN's post-FFN norm (and",
+        "residual/layer scale) to attribute each layer's FFN contribution down to individual W_down",
+        "columns and prints the top <k> neurons ranked by |Col DLA| across the requested layers.",
         "With TOP <m> HEADS, linearizes each softmax layer's post-attention norm and slices o_proj by",
         "head to rank the top <m> attention heads by |Head DLA| across the requested softmax layers.",
+        "With TOP <c> CHANNELS, linearizes each ShortConv layer's post-operator norm and attributes",
+        "its operator contribution down to individual conv.out_proj channels (gated_y * (u · W_out)).",
     ],
     examples: &[
         "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\";",
-        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" LAYERS 0-23 TOP 12 COLUMNS;",
+        "DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" LAYERS 0-23 TOP 12 NEURONS;",
         "DLA \"The capital of France is\" FOR ID 4741 VS ID 4595 AT LAYERS (20, 22) TOP 8 HEADS;",
+        "DLA \"The capital of France is\" FOR ID 4741 VS ID 4595 LAYERS 0-23 TOP 8 CHANNELS;",
     ],
     needs: &[Need::Vindex3, Need::Tokenizer],
     effect: &[

@@ -56,9 +56,9 @@ pub mod operations {
     };
     pub use super::vindex3::{
         npy_file_bytes, operand_bits_from_values, operand_origin, CaptureGeometry, CaptureSpec,
-        Captured, DiscardedWeightEdits, DlaColumnRow, DlaHeadRow, DlaLayerRow, DlaReport,
-        EditedElement, Generated, NpyDescr, OperandValues, Prediction, Predictions, StagedLowRank,
-        StagedWeightDelta, WeightRead,
+        Captured, DiscardedWeightEdits, DlaChannelRow, DlaColumnRow, DlaHeadRow, DlaLayerRow,
+        DlaReport, EditedElement, Generated, NpyDescr, OperandValues, Prediction, Predictions,
+        StagedLowRank, StagedWeightDelta, WeightRead,
     };
     pub use crate::ast::{
         CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite, DlaTarget,
@@ -337,6 +337,11 @@ impl Session {
     /// The capability profile this session executes under.
     pub fn profile(&self) -> CapabilityProfile {
         self.profile
+    }
+
+    /// Whether this session is currently bound to a local VINDEX3 container.
+    pub(crate) fn is_vindex3(&self) -> bool {
+        matches!(self.backend, Backend::Vindex3 { .. })
     }
 
     pub fn execute(&mut self, stmt: &Statement) -> Result<Vec<String>, LqlError> {
@@ -676,6 +681,7 @@ impl Session {
                 layers,
                 top_columns,
                 top_heads,
+                top_channels,
             } => self.exec_dla(
                 prompt,
                 target_a,
@@ -683,6 +689,7 @@ impl Session {
                 layers.as_ref(),
                 *top_columns,
                 *top_heads,
+                *top_channels,
             ),
         }
     }

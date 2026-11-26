@@ -375,6 +375,12 @@ impl From<ChatArgs> for run_cmd::RunArgs {
 /// violated contract).
 const LQL_FAILURE_EXIT: i32 = 1;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum LqlOutputFormat {
+    Text,
+    Json,
+}
+
 #[derive(clap::Args)]
 struct LqlArgs {
     /// One or more LQL statements separated by `;`, as one argument
@@ -387,6 +393,11 @@ struct LqlArgs {
     /// `LARQL_LQL_REPRESENTATION_SOURCE` sets it when this flag does not.
     #[arg(long)]
     representation_source: Option<String>,
+
+    /// Output format for batch execution: `text` (default human-readable lines) or `json`
+    /// (structured JSON document with typed payloads for DLA, INFER, and EXPORT SAFETENSORS).
+    #[arg(long, value_enum, default_value_t = LqlOutputFormat::Text)]
+    format: LqlOutputFormat,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -503,15 +514,42 @@ fn real_main() -> i32 {
                 Ok(session) => session,
                 Err(e) => {
                     // A usage error in the command itself: the same status as a statement that failed.
-                    println!("Error: {e}");
+                    match args.format {
+                        LqlOutputFormat::Text => println!("Error: {e}"),
+                        LqlOutputFormat::Json => {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "ok": false,
+                                    "errors": 1,
+                                    "contract_violations": 0,
+                                    "error": e.to_string(),
+                                    "results": [],
+                                })
+                            );
+                        }
+                    }
                     return LQL_FAILURE_EXIT;
                 }
             };
-            let outcome = larql_lql::run_batch_outcome_in(&mut session, &args.statement);
-            for line in &outcome.lines {
-                println!("{line}");
+            match args.format {
+                LqlOutputFormat::Text => {
+                    let outcome = larql_lql::run_batch_outcome_in(&mut session, &args.statement);
+                    for line in &outcome.lines {
+                        println!("{line}");
+                    }
+                    return outcome.exit_code();
+                }
+                LqlOutputFormat::Json => {
+                    let outcome = larql_lql::run_batch_json_in(&mut session, &args.statement);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&outcome.to_json_value())
+                            .expect("serialize LQL JSON output")
+                    );
+                    return outcome.exit_code();
+                }
             }
-            return outcome.exit_code();
         }
 
         #[cfg(unix)]

@@ -14,11 +14,12 @@ use larql_vindex::format::vindex3::opplan::exec::{
     execute_prepared_position_exits_with_taps, execute_prepared_prefill_position_exits_with_taps,
     requires_continuation, BatchTapRequest,
 };
-use larql_vindex::format::vindex3::opplan::LayerFfn;
+use larql_vindex::format::vindex3::opplan::{LayerAttention, LayerFfn};
+use serde::Serialize;
 
 use super::dla_math::{
-    dot_diff_f64, dot_f64, linearize_norm, load_two_rows, mixer_label, plane_rows,
-    resolve_dla_layers, resolve_dla_target,
+    dot_diff_f64, dot_f64, format_dla_report, linearize_norm, load_two_rows, mixer_label,
+    plane_rows, resolve_dla_layers, resolve_dla_target,
 };
 use super::{encode_raw_prompt, prefix_cache, prepared_operands_for_session, v3_continuation};
 use crate::ast::{CaptureLayers, DlaTarget};
@@ -26,7 +27,7 @@ use crate::error::LqlError;
 use crate::executor::Session;
 
 /// One layer's direct logit attribution row.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DlaLayerRow {
     pub layer: usize,
     pub mixer: &'static str,
@@ -36,8 +37,8 @@ pub struct DlaLayerRow {
     pub cumulative_dla: f32,
 }
 
-/// One dense FFN column's direct logit attribution.
-#[derive(Debug, Clone, PartialEq)]
+/// One dense FFN column/neuron's direct logit attribution.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DlaColumnRow {
     pub layer: usize,
     pub column: usize,
@@ -47,7 +48,7 @@ pub struct DlaColumnRow {
 }
 
 /// One softmax attention head's direct logit attribution.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DlaHeadRow {
     pub layer: usize,
     pub head: usize,
@@ -55,8 +56,18 @@ pub struct DlaHeadRow {
     pub contribution: f32,
 }
 
+/// One `ShortConv` channel's direct logit attribution (`gated_y[c] * (u_conv · W_out[:, c])`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DlaChannelRow {
+    pub layer: usize,
+    pub channel: usize,
+    pub activation: f32,
+    pub projection: f32,
+    pub contribution: f32,
+}
+
 /// Typed result of `DLA "<prompt>" FOR "<token_a>" VS "<token_b>" ...;`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DlaReport {
     pub prompt_ids: Vec<u32>,
     pub target_a: String,
@@ -75,6 +86,8 @@ pub struct DlaReport {
     pub dense_ffn_layers_attributed: usize,
     pub top_heads: Vec<DlaHeadRow>,
     pub softmax_layers_attributed: usize,
+    pub top_channels: Vec<DlaChannelRow>,
+    pub short_conv_layers_attributed: usize,
     pub executes_patched: bool,
     pub elapsed_ms: f64,
 }
@@ -82,6 +95,7 @@ pub struct DlaReport {
 impl Session {
     /// Typed direct logit attribution for `target_a` vs `target_b` (text literal or explicit token ID)
     /// at the prompt's final position.
+    #[allow(clippy::too_many_arguments)]
     pub fn dla(
         &self,
         prompt: &str,
@@ -90,6 +104,7 @@ impl Session {
         layers: Option<&CaptureLayers>,
         top_columns: Option<u32>,
         top_heads: Option<u32>,
+        top_channels: Option<u32>,
     ) -> Result<DlaReport, LqlError> {
         let target_a = target_a.into();
         let target_b = target_b.into();
@@ -112,14 +127,20 @@ impl Session {
         let requested_layers = resolve_dla_layers(layers, plan.layers.len())?;
         let top_k = top_columns.unwrap_or(0) as usize;
         let top_h = top_heads.unwrap_or(0) as usize;
+        let top_c = top_channels.unwrap_or(0) as usize;
         if top_columns == Some(0) {
             return Err(LqlError::Execution(
-                "DLA: TOP column count must be at least 1".into(),
+                "DLA: TOP column/neuron count must be at least 1".into(),
             ));
         }
         if top_heads == Some(0) {
             return Err(LqlError::Execution(
                 "DLA: TOP head count must be at least 1".into(),
+            ));
+        }
+        if top_channels == Some(0) {
+            return Err(LqlError::Execution(
+                "DLA: TOP channel count must be at least 1".into(),
             ));
         }
 
@@ -145,6 +166,7 @@ impl Session {
         let mut taps = BatchTapRequest::default();
         let mut dense_layers: Vec<usize> = Vec::new();
         let mut softmax_layers: Vec<usize> = Vec::new();
+        let mut short_conv_layers: Vec<usize> = Vec::new();
         if top_k > 0 {
             for &l in &requested_layers {
                 if plan.layers[l]
@@ -166,6 +188,14 @@ impl Session {
                 if plan.layers[l].attention.softmax().is_some() {
                     taps.attn_head_out.insert(l);
                     softmax_layers.push(l);
+                }
+            }
+        }
+        if top_c > 0 {
+            for &l in &requested_layers {
+                if matches!(plan.layers[l].attention, LayerAttention::ShortConv(_)) {
+                    taps.short_conv.insert(l);
+                    short_conv_layers.push(l);
                 }
             }
         }
@@ -545,6 +575,105 @@ impl Session {
         });
         heads.truncate(top_h);
 
+        // Optional exact per-channel ShortConv attribution across requested ShortConv layers.
+        let mut channels: Vec<DlaChannelRow> = Vec::new();
+        for &l in &short_conv_layers {
+            let layer_plan = &plan.layers[l];
+            let LayerAttention::ShortConv(sc_op) = &layer_plan.attention else {
+                continue;
+            };
+            let planes = tap_out.short_conv.get(&l).ok_or_else(|| {
+                LqlError::Execution(format!(
+                    "DLA: layer {l} short_conv.gated_y was not captured"
+                ))
+            })?;
+            let gated_y = planes.gated_y.last().ok_or_else(|| {
+                LqlError::Execution(format!("DLA: layer {l} short_conv.gated_y empty"))
+            })?;
+            let conv_dim = sc_op.out_proj.shape[1];
+            let w_out = ops
+                .short_conv_out_proj_f32(plan, l)
+                .or_else(|_| source.load(&sc_op.out_proj))
+                .map_err(|e| LqlError::exec("DLA failed to load ShortConv out_proj", e))?;
+            if w_out.len() != hidden * conv_dim || gated_y.len() != conv_dim {
+                return Err(LqlError::Execution(format!(
+                    "DLA: layer {l} ShortConv out_proj shape mismatch (got {} weights, {} gated_y, expected {hidden}x{conv_dim})",
+                    w_out.len(),
+                    gated_y.len()
+                )));
+            }
+
+            let mut u_conv = u_eff.clone();
+            if let Some(scale) = layer_plan.residual_scale {
+                for v in &mut u_conv {
+                    *v *= scale;
+                }
+            }
+            if let Some(layer_scale_ref) = &layer_plan.layer_scale {
+                let s = source
+                    .load(layer_scale_ref)
+                    .map_err(|e| LqlError::exec("DLA failed to load layer_scale", e))?;
+                if let Some(&scalar) = s.first() {
+                    for v in &mut u_conv {
+                        *v *= scalar;
+                    }
+                }
+            }
+            if let Some(post_norm) = &layer_plan.post_attention_norm {
+                let out_bias = sc_op
+                    .out_proj_bias
+                    .as_ref()
+                    .map(|b| source.load(b))
+                    .transpose()
+                    .map_err(|e| LqlError::exec("DLA failed to load ShortConv out_proj bias", e))?;
+                let mut conv_out = vec![0.0f32; hidden];
+                for (r, dst) in conv_out.iter_mut().enumerate() {
+                    let row = &w_out[r * conv_dim..(r + 1) * conv_dim];
+                    let mut sum: f64 = row
+                        .iter()
+                        .zip(gated_y.iter())
+                        .map(|(&w, &x)| (w as f64) * (x as f64))
+                        .sum();
+                    if let Some(ref bias) = out_bias {
+                        sum += bias[r] as f64;
+                    }
+                    *dst = sum as f32;
+                }
+                u_conv = linearize_norm(&source, post_norm, &conv_out, &u_conv)
+                    .map_err(|e| LqlError::exec("DLA failed to linearize post_operator_norm", e))?;
+            }
+
+            let mut chan_proj = vec![0.0f64; conv_dim];
+            for (r, &ur) in u_conv.iter().enumerate() {
+                let ur = ur as f64;
+                if ur == 0.0 {
+                    continue;
+                }
+                let row = &w_out[r * conv_dim..(r + 1) * conv_dim];
+                for (acc, &w) in chan_proj.iter_mut().zip(row.iter()) {
+                    *acc += ur * (w as f64);
+                }
+            }
+
+            for (c, (&y, &p)) in gated_y.iter().zip(chan_proj.iter()).enumerate() {
+                channels.push(DlaChannelRow {
+                    layer: l,
+                    channel: c,
+                    activation: y,
+                    projection: p as f32,
+                    contribution: ((y as f64) * p) as f32,
+                });
+            }
+        }
+        channels.sort_by(|a, b| {
+            b.contribution
+                .abs()
+                .total_cmp(&a.contribution.abs())
+                .then_with(|| a.layer.cmp(&b.layer))
+                .then_with(|| a.channel.cmp(&b.channel))
+        });
+        channels.truncate(top_c);
+
         Ok(DlaReport {
             prompt_ids,
             target_a: label_a,
@@ -563,11 +692,14 @@ impl Session {
             dense_ffn_layers_attributed: dense_layers.len(),
             top_heads: heads,
             softmax_layers_attributed: softmax_layers.len(),
+            top_channels: channels,
+            short_conv_layers_attributed: short_conv_layers.len(),
             executes_patched,
             elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn exec_dla(
         &self,
         prompt: &str,
@@ -576,111 +708,17 @@ impl Session {
         layers: Option<&CaptureLayers>,
         top_columns: Option<u32>,
         top_heads: Option<u32>,
+        top_channels: Option<u32>,
     ) -> Result<Vec<String>, LqlError> {
-        let report = self.dla(prompt, target_a, target_b, layers, top_columns, top_heads)?;
-        let mode = if report.executes_patched {
-            "patched"
-        } else {
-            "stored"
-        };
-        let mut out = vec![
-            format!(
-                "Direct Logit Attribution ({} prompt tokens, executes: {mode}):",
-                report.prompt_ids.len()
-            ),
-            format!(
-                "  Target A: {:?} [id {}]  logit = {:+.4}",
-                report.target_a, report.token_id_a, report.logit_a
-            ),
-            format!(
-                "  Target B: {:?} [id {}]  logit = {:+.4}",
-                report.target_b, report.token_id_b, report.logit_b
-            ),
-            format!(
-                "  Logit diff (A - B): {:+.4}   (DLA sum: {:+.4}, residual: {:.2e})",
-                report.exact_logit_diff,
-                report.total_dla,
-                (report.total_dla - report.pre_softcap_diff).abs()
-            ),
-        ];
-        if let Some(cap) = report.softcapping {
-            out.push(format!(
-                "  Note: output softcapping = {cap}; DLA decomposes pre-softcap diff ({:+.4}).",
-                report.pre_softcap_diff
-            ));
-        }
-        out.push(String::new());
-        out.push(format!(
-            "  {:<6} {:<12} {:>10} {:>10} {:>10} {:>10}",
-            "Layer", "Mixer", "Op DLA", "FFN DLA", "Layer DLA", "Cum DLA"
-        ));
-        out.push(format!("  {}", "-".repeat(62)));
-        out.push(format!(
-            "  {:<6} {:<12} {:>+10.4} {:>10} {:>+10.4} {:>+10.4}",
-            "emb", "-", report.embedding_dla, "-", report.embedding_dla, report.embedding_dla
-        ));
-        for row in &report.layers {
-            out.push(format!(
-                "  L{:<5} {:<12} {:>+10.4} {:>+10.4} {:>+10.4} {:>+10.4}",
-                row.layer,
-                row.mixer,
-                row.operator_dla,
-                row.ffn_dla,
-                row.layer_dla,
-                row.cumulative_dla
-            ));
-        }
-
-        if !report.top_columns.is_empty() {
-            out.push(String::new());
-            out.push(format!(
-                "Top {} FFN columns (across {} dense FFN layer(s)):",
-                report.top_columns.len(),
-                report.dense_ffn_layers_attributed
-            ));
-            out.push(format!(
-                "  {:>4}  {:<6} {:>6} {:>10} {:>12} {:>10}",
-                "Rank", "Layer", "Col", "Act", "Proj (u·w)", "Col DLA"
-            ));
-            out.push(format!("  {}", "-".repeat(54)));
-            for (i, col) in report.top_columns.iter().enumerate() {
-                out.push(format!(
-                    "  {:>4}  L{:<5} {:>6} {:>+10.4} {:>+12.4} {:>+10.4}",
-                    i + 1,
-                    col.layer,
-                    col.column,
-                    col.activation,
-                    col.projection,
-                    col.contribution
-                ));
-            }
-        }
-
-        if !report.top_heads.is_empty() {
-            out.push(String::new());
-            out.push(format!(
-                "Top {} attention heads (across {} softmax layer(s)):",
-                report.top_heads.len(),
-                report.softmax_layers_attributed
-            ));
-            out.push(format!(
-                "  {:>4}  {:<6} {:<6} {:>10} {:>10}",
-                "Rank", "Layer", "Head", "||h_out||", "Head DLA"
-            ));
-            out.push(format!("  {}", "-".repeat(42)));
-            for (i, h) in report.top_heads.iter().enumerate() {
-                out.push(format!(
-                    "  {:>4}  L{:<5} H{:02}    {:>10.4} {:>+10.4}",
-                    i + 1,
-                    h.layer,
-                    h.head,
-                    h.head_norm,
-                    h.contribution
-                ));
-            }
-        }
-
-        out.push(format!("  {:.0}ms", report.elapsed_ms));
-        Ok(out)
+        let report = self.dla(
+            prompt,
+            target_a,
+            target_b,
+            layers,
+            top_columns,
+            top_heads,
+            top_channels,
+        )?;
+        Ok(format_dla_report(&report))
     }
 }

@@ -244,3 +244,131 @@ fn widen_float_row(dtype: &str, bytes: &[u8]) -> Result<Vec<f32>, VindexError> {
         ))),
     }
 }
+
+/// Format a [`super::dla::DlaReport`] as human-readable aligned tables.
+pub(super) fn format_dla_report(report: &super::dla::DlaReport) -> Vec<String> {
+    let mode = if report.executes_patched {
+        "patched"
+    } else {
+        "stored"
+    };
+    let mut out = vec![
+        format!(
+            "Direct Logit Attribution ({} prompt tokens, executes: {mode}):",
+            report.prompt_ids.len()
+        ),
+        format!(
+            "  Target A: {:?} [id {}]  logit = {:+.4}",
+            report.target_a, report.token_id_a, report.logit_a
+        ),
+        format!(
+            "  Target B: {:?} [id {}]  logit = {:+.4}",
+            report.target_b, report.token_id_b, report.logit_b
+        ),
+        format!(
+            "  Logit diff (A - B): {:+.4}   (DLA sum: {:+.4}, residual: {:.2e})",
+            report.exact_logit_diff,
+            report.total_dla,
+            (report.total_dla - report.pre_softcap_diff).abs()
+        ),
+    ];
+    if let Some(cap) = report.softcapping {
+        out.push(format!(
+            "  Note: output softcapping = {cap}; DLA decomposes pre-softcap diff ({:+.4}).",
+            report.pre_softcap_diff
+        ));
+    }
+    out.push(String::new());
+    out.push(format!(
+        "  {:<6} {:<12} {:>10} {:>10} {:>10} {:>10}",
+        "Layer", "Mixer", "Op DLA", "FFN DLA", "Layer DLA", "Cum DLA"
+    ));
+    out.push(format!("  {}", "-".repeat(62)));
+    out.push(format!(
+        "  {:<6} {:<12} {:>+10.4} {:>10} {:>+10.4} {:>+10.4}",
+        "emb", "-", report.embedding_dla, "-", report.embedding_dla, report.embedding_dla
+    ));
+    for row in &report.layers {
+        out.push(format!(
+            "  L{:<5} {:<12} {:>+10.4} {:>+10.4} {:>+10.4} {:>+10.4}",
+            row.layer, row.mixer, row.operator_dla, row.ffn_dla, row.layer_dla, row.cumulative_dla
+        ));
+    }
+
+    if !report.top_columns.is_empty() {
+        out.push(String::new());
+        out.push(format!(
+            "Top {} FFN columns/neurons (across {} dense FFN layer(s)):",
+            report.top_columns.len(),
+            report.dense_ffn_layers_attributed
+        ));
+        out.push(format!(
+            "  {:>4}  {:<6} {:>6} {:>10} {:>12} {:>10}",
+            "Rank", "Layer", "Col", "Act", "Proj (u·w)", "Col DLA"
+        ));
+        out.push(format!("  {}", "-".repeat(54)));
+        for (i, col) in report.top_columns.iter().enumerate() {
+            out.push(format!(
+                "  {:>4}  L{:<5} {:>6} {:>+10.4} {:>+12.4} {:>+10.4}",
+                i + 1,
+                col.layer,
+                col.column,
+                col.activation,
+                col.projection,
+                col.contribution
+            ));
+        }
+    }
+
+    if !report.top_heads.is_empty() {
+        out.push(String::new());
+        out.push(format!(
+            "Top {} attention heads (across {} softmax layer(s)):",
+            report.top_heads.len(),
+            report.softmax_layers_attributed
+        ));
+        out.push(format!(
+            "  {:>4}  {:<6} {:<6} {:>10} {:>10}",
+            "Rank", "Layer", "Head", "||h_out||", "Head DLA"
+        ));
+        out.push(format!("  {}", "-".repeat(42)));
+        for (i, h) in report.top_heads.iter().enumerate() {
+            out.push(format!(
+                "  {:>4}  L{:<5} H{:02}    {:>10.4} {:>+10.4}",
+                i + 1,
+                h.layer,
+                h.head,
+                h.head_norm,
+                h.contribution
+            ));
+        }
+    }
+
+    if !report.top_channels.is_empty() {
+        out.push(String::new());
+        out.push(format!(
+            "Top {} ShortConv channels (across {} ShortConv layer(s)):",
+            report.top_channels.len(),
+            report.short_conv_layers_attributed
+        ));
+        out.push(format!(
+            "  {:>4}  {:<6} {:>6} {:>10} {:>12} {:>10}",
+            "Rank", "Layer", "Chan", "GatedY", "Proj (u·w)", "Chan DLA"
+        ));
+        out.push(format!("  {}", "-".repeat(54)));
+        for (i, ch) in report.top_channels.iter().enumerate() {
+            out.push(format!(
+                "  {:>4}  L{:<5} {:>6} {:>+10.4} {:>+12.4} {:>+10.4}",
+                i + 1,
+                ch.layer,
+                ch.channel,
+                ch.activation,
+                ch.projection,
+                ch.contribution
+            ));
+        }
+    }
+
+    out.push(format!("  {:.0}ms", report.elapsed_ms));
+    out
+}

@@ -359,6 +359,7 @@ pub enum Statement {
         layers: Option<CaptureLayers>,
         top_columns: Option<u32>,
         top_heads: Option<u32>,
+        top_channels: Option<u32>,
     },
 
     // ── Help ──

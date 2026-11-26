@@ -368,7 +368,7 @@ fn execute_and_print(session: &mut Session, input: &str) {
     }
 }
 
-fn split_statements(input: &str) -> Vec<String> {
+pub(crate) fn split_statements(input: &str) -> Vec<String> {
     let mut stmts = Vec::new();
     let mut current = String::new();
     let mut in_string = false;

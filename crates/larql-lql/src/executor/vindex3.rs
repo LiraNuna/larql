@@ -36,7 +36,7 @@ mod tensors;
 mod weights;
 pub(crate) use capture::{AppliedPatchFile, CaptureMultiRequest, CaptureRequest};
 pub use capture::{CaptureGeometry, CaptureSpec, Captured};
-pub use dla::{DlaColumnRow, DlaHeadRow, DlaLayerRow, DlaReport};
+pub use dla::{DlaChannelRow, DlaColumnRow, DlaHeadRow, DlaLayerRow, DlaReport};
 pub use export_weight::WeightRead;
 pub(crate) use live::{live_weight_lines, nothing_in_effect_line};
 pub use low_rank::{operand_bits_from_values, operand_origin, OperandValues, StagedLowRank};
@@ -115,7 +115,7 @@ pub struct Predictions {
 }
 
 /// What `INFER … GENERATE <n>` computes on a VINDEX3 binding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Generated {
     /// The prompt as INFER's raw-prompt encoder encodes it.
     pub prompt_ids: Vec<u32>,

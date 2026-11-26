@@ -1,6 +1,6 @@
 //! Accessors on prepared operands.
 
-use super::super::super::{ComponentOpPlan, LayerFfn, OutputOp};
+use super::super::super::{ComponentOpPlan, LayerAttention, LayerFfn, OutputOp};
 use super::super::accounting::ResidencyBudget;
 use super::super::backend::{NormCall, PlanBackend, ProjectCall};
 use super::super::experts::FfnOperands;
@@ -196,6 +196,33 @@ impl PreparedOperands {
         ops.w_o
             .slice()
             .decode_f32(self.hidden, attn.num_q_heads * attn.head_dim)
+    }
+
+    /// The effective `ShortConv` output projection matrix `[hidden, conv_dim]`
+    /// as held by this prepared image (widened/dequantised from its pinned
+    /// resident representation, e.g. exact BF16 or Q8).
+    pub fn short_conv_out_proj_f32(
+        &self,
+        plan: &ComponentOpPlan,
+        layer: usize,
+    ) -> Result<Vec<f32>, VindexError> {
+        let layer_plan = plan.layers.get(layer).ok_or_else(|| {
+            VindexError::Parse(format!("layer {layer} is outside the component plan"))
+        })?;
+        let LayerAttention::ShortConv(sc_op) = &layer_plan.attention else {
+            return Err(VindexError::Parse(format!(
+                "layer {layer} is not a ShortConv operator"
+            )));
+        };
+        let prepared = self.prepared_layer(layer)?;
+        let PreparedAttention::ShortConv(ops) = &prepared.attention else {
+            return Err(VindexError::Parse(format!(
+                "prepared layer {layer} is not a ShortConv operator"
+            )));
+        };
+        let rows = sc_op.out_proj.shape[0];
+        let cols = sc_op.out_proj.shape[1];
+        ops.out_proj.slice().decode_f32(rows, cols)
     }
 
     /// Lower `slice` of `plan`'s operands into `backend`'s execution

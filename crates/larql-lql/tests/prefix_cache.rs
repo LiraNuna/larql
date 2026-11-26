@@ -253,10 +253,10 @@ fn shared_prefix_and_extension_match_fresh_uncached_sessions_on_hybrid_lfm3() {
     // DLA with TOP COLUMNS over prefix-cached prompts matches fresh session.
     for prompt in [p1, p2, ext] {
         let got = cached
-            .dla(prompt, 5u32, 12u32, None, Some(20), None)
+            .dla(prompt, 5u32, 12u32, None, Some(20), None, Some(20))
             .unwrap();
         let fresh = open(&container)
-            .dla(prompt, 5u32, 12u32, None, Some(20), None)
+            .dla(prompt, 5u32, 12u32, None, Some(20), None, Some(20))
             .unwrap();
         assert_eq!(
             got.exact_logit_diff.to_bits(),
@@ -269,6 +269,7 @@ fn shared_prefix_and_extension_match_fresh_uncached_sessions_on_hybrid_lfm3() {
             "DLA total_dla mismatch on {prompt}"
         );
         assert_eq!(got.top_columns, fresh.top_columns);
+        assert_eq!(got.top_channels, fresh.top_channels);
     }
 
     // CAPTURE across residual, ffn.down_input, short_conv.gated_y, and logits at POSITIONS LAST

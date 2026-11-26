@@ -220,6 +220,9 @@ fn parses_all_dla_forms() {
         r#"DLA "[1] [2]" FOR ID 5 VS ID 12;"#,
         r#"DLA "[1] [2]" FOR "[5]" VS ID 12 AT LAYERS (1, 3) TOP 4 HEADS;"#,
         r#"DLA "[1] [2]" FOR ID 5 VS "[12]" LAYERS 0-3 TOP 6 COLUMNS;"#,
+        r#"DLA "[1] [2]" FOR ID 5 VS "[12]" LAYERS 0-3 TOP 6 NEURONS;"#,
+        r#"DLA "[1] [2]" FOR ID 5 VS "[12]" LAYERS 0-3 TOP 8 CHANNELS;"#,
+        r#"DLA "[1] [2]" FOR ID 5 VS "[12]" AT LAYERS (0..4) TOP 4 NEURONS TOP 4 HEADS TOP 4 CHANNELS;"#,
     ] {
         let stmt = parse(src).unwrap_or_else(|e| panic!("parse {src}: {e}"));
         assert!(matches!(stmt, Statement::Dla { .. }), "{stmt:?}");
@@ -230,7 +233,8 @@ fn parses_all_dla_forms() {
 fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
     let (_dir, mut session) = lfm3_session();
 
-    // Ask for all columns across all 4 layers (4 * 24 = 96 total) AND all heads across the 2 softmax layers (2 * 4 = 8).
+    // Ask for all columns across all 4 layers (4 * 24 = 96 total), all heads across the 2 softmax
+    // layers (2 * 4 = 8), AND all ShortConv channels across the 2 ShortConv layers (2 * 16 = 32).
     let report = session
         .dla(
             "[3] [7] [11] [15]",
@@ -238,6 +242,7 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
             "[12]",
             None,
             Some(200),
+            Some(100),
             Some(100),
         )
         .expect(
@@ -251,7 +256,9 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
     assert_eq!(report.layers[3].mixer, "full");
     assert_eq!(report.dense_ffn_layers_attributed, 4);
     assert_eq!(report.softmax_layers_attributed, 2);
+    assert_eq!(report.short_conv_layers_attributed, 2);
     assert_eq!(report.top_heads.len(), 2 * Q_HEADS);
+    assert_eq!(report.top_channels.len(), 2 * HIDDEN);
 
     // Exact additive identity across the stack: emb + sum(op + ffn) == pre_softcap_diff == exact_logit_diff.
     assert!(
@@ -294,7 +301,31 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
         );
     }
 
-    // Heads and columns are ranked strictly by |contribution| descending.
+    // Exact additive identity at the ShortConv-channel level through sandwich post_operator_norm:
+    // sum_c chan_dla[l, c] == operator_dla[l] for every ShortConv layer!
+    for &sc_layer in &[0usize, 2usize] {
+        let chan_sum: f32 = report
+            .top_channels
+            .iter()
+            .filter(|c| c.layer == sc_layer)
+            .map(|c| c.contribution)
+            .sum();
+        let op_dla = report.layers[sc_layer].operator_dla;
+        assert!(
+            (chan_sum - op_dla).abs() < 1e-3,
+            "layer {sc_layer}: ShortConv channel DLA sum {chan_sum} must match operator_dla {op_dla}"
+        );
+    }
+
+    // Heads, columns, and channels are ranked strictly by |contribution| descending.
+    for w in report.top_channels.windows(2) {
+        assert!(
+            w[0].contribution.abs() >= w[1].contribution.abs(),
+            "channels not sorted by |contribution|: {:?} vs {:?}",
+            w[0],
+            w[1]
+        );
+    }
     for w in report.top_heads.windows(2) {
         assert!(
             w[0].contribution.abs() >= w[1].contribution.abs(),
@@ -312,25 +343,34 @@ fn dla_decomposition_is_exact_at_layer_and_column_level_on_hybrid_short_conv() {
         );
     }
 
-    // Statement execution formats cleanly with both columns and heads.
+    // Statement execution formats cleanly with neurons (alias for columns), heads, and channels.
     let lines = session
         .execute(
-            &parse(r#"DLA "[3] [7] [11] [15]" FOR "[5]" VS "[12]" LAYERS 0-3 TOP 5 COLUMNS TOP 4 HEADS;"#)
+            &parse(r#"DLA "[3] [7] [11] [15]" FOR "[5]" VS "[12]" LAYERS 0-3 TOP 5 NEURONS TOP 4 HEADS TOP 4 CHANNELS;"#)
                 .unwrap(),
         )
         .unwrap();
     let text = lines.join("\n");
     assert!(text.contains("Direct Logit Attribution"), "{text}");
     assert!(text.contains("short-conv"), "{text}");
-    assert!(text.contains("Top 5 FFN columns"), "{text}");
+    assert!(text.contains("Top 5 FFN columns/neurons"), "{text}");
     assert!(text.contains("Top 4 attention heads"), "{text}");
+    assert!(text.contains("Top 4 ShortConv channels"), "{text}");
 }
 
 #[test]
 fn dla_executes_live_patched_weights_and_reverts_on_discard() {
     let (_dir, mut session) = lfm3_session();
     let base = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(4))
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(10),
+            Some(4),
+            Some(4),
+        )
         .unwrap();
     assert!(!base.executes_patched);
 
@@ -338,7 +378,15 @@ fn dla_executes_live_patched_weights_and_reverts_on_discard() {
     session.execute(&parse(stage).unwrap()).unwrap();
 
     let patched = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(4))
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(10),
+            Some(4),
+            Some(4),
+        )
         .unwrap();
     assert!(patched.executes_patched);
     assert_ne!(
@@ -357,7 +405,15 @@ fn dla_executes_live_patched_weights_and_reverts_on_discard() {
         .execute(&parse("DISCARD WEIGHT EDITS;").unwrap())
         .unwrap();
     let restored = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(4))
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(10),
+            Some(4),
+            Some(4),
+        )
         .unwrap();
     assert!(!restored.executes_patched);
     assert_eq!(
@@ -388,6 +444,7 @@ fn dla_runs_under_auto_source_with_hybrid_live_patches_and_cached_operands() {
             None,
             Some(200),
             Some(100),
+            Some(100),
         )
         .expect("DLA runs cleanly under auto representation source");
     let base_auto_cached = auto_session
@@ -397,6 +454,7 @@ fn dla_runs_under_auto_source_with_hybrid_live_patches_and_cached_operands() {
             "[12]",
             None,
             Some(200),
+            Some(100),
             Some(100),
         )
         .expect("second DLA reuses resident prepared operands");
@@ -422,6 +480,7 @@ fn dla_runs_under_auto_source_with_hybrid_live_patches_and_cached_operands() {
             None,
             Some(200),
             Some(100),
+            Some(100),
         )
         .expect("hybrid auto patched DLA succeeds");
     assert!(patched_auto.executes_patched);
@@ -441,10 +500,26 @@ fn dla_runs_under_auto_source_with_hybrid_live_patches_and_cached_operands() {
 fn dla_token_id_targets_match_text_targets_bit_for_bit_and_refuse_oob() {
     let (_dir, mut session) = lfm3_session();
     let by_text = session
-        .dla("[3] [7] [11] [15]", "[5]", "[12]", None, Some(10), Some(8))
+        .dla(
+            "[3] [7] [11] [15]",
+            "[5]",
+            "[12]",
+            None,
+            Some(10),
+            Some(8),
+            Some(8),
+        )
         .unwrap();
     let by_id = session
-        .dla("[3] [7] [11] [15]", 5u32, 12u32, None, Some(10), Some(8))
+        .dla(
+            "[3] [7] [11] [15]",
+            5u32,
+            12u32,
+            None,
+            Some(10),
+            Some(8),
+            Some(8),
+        )
         .unwrap();
     assert_eq!(by_id.token_id_a, 5);
     assert_eq!(by_id.token_id_b, 12);
@@ -481,7 +556,7 @@ fn dla_token_id_targets_match_text_targets_bit_for_bit_and_refuse_oob() {
 fn dla_refuses_multi_token_targets_and_bad_layers() {
     let (_dir, mut session) = lfm3_session();
     let err = session
-        .dla("[3] [7]", "[5] [6]", "[12]", None, None, None)
+        .dla("[3] [7]", "[5] [6]", "[12]", None, None, None, None)
         .unwrap_err()
         .to_string();
     assert!(
@@ -490,7 +565,7 @@ fn dla_refuses_multi_token_targets_and_bad_layers() {
     );
 
     let err = session
-        .dla("[3] [7]", "[5]", "", None, None, None)
+        .dla("[3] [7]", "[5]", "", None, None, None, None)
         .unwrap_err()
         .to_string();
     assert!(err.contains("exactly 1 token"), "{err}");
@@ -512,4 +587,49 @@ fn dla_refuses_multi_token_targets_and_bad_layers() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("at least 1"), "{err}");
+
+    let err = session
+        .execute(&parse(r#"DLA "[3] [7]" FOR "[5]" VS "[12]" TOP 0 CHANNELS;"#).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("at least 1"), "{err}");
+}
+
+#[test]
+fn batch_json_output_emits_typed_dla_and_infer_payloads() {
+    let (_dir, mut session) = lfm3_session();
+    let batch = r#"
+        DLA "[3] [7] [11] [15]" FOR ID 5 VS ID 12 LAYERS 0-3 TOP 4 NEURONS TOP 4 HEADS TOP 4 CHANNELS;
+        INFER "[3] [7]" TOP 3;
+        INFER "[3] [7]" GENERATE 2;
+    "#;
+    let outcome = larql_lql::run_batch_json_in(&mut session, batch);
+    assert_eq!(outcome.errors, 0);
+    assert_eq!(outcome.exit_code(), larql_lql::EXIT_OK);
+    let doc = outcome.to_json_value();
+    assert_eq!(doc["ok"], serde_json::json!(true));
+    let results = doc["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+
+    assert_eq!(results[0]["statement"], "DLA");
+    assert_eq!(results[0]["data"]["token_id_a"], 5);
+    assert_eq!(results[0]["data"]["token_id_b"], 12);
+    assert_eq!(results[0]["data"]["layers"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        results[0]["data"]["top_columns"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(results[0]["data"]["top_heads"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        results[0]["data"]["top_channels"].as_array().unwrap().len(),
+        4
+    );
+
+    assert_eq!(results[1]["statement"], "INFER");
+    assert_eq!(results[1]["data"]["mode"], "predict");
+    assert_eq!(results[1]["data"]["top"].as_array().unwrap().len(), 3);
+
+    assert_eq!(results[2]["statement"], "INFER");
+    assert_eq!(results[2]["data"]["mode"], "generate");
+    assert_eq!(results[2]["data"]["token_ids"].as_array().unwrap().len(), 2);
 }

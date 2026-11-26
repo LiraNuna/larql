@@ -32,6 +32,7 @@ impl Parser {
         let mut layers: Option<CaptureLayers> = None;
         let mut top_columns: Option<u32> = None;
         let mut top_heads: Option<u32> = None;
+        let mut top_channels: Option<u32> = None;
 
         loop {
             if self.check_keyword(Keyword::At) {
@@ -58,13 +59,25 @@ impl Parser {
                         return Err(ParseError("DLA: TOP HEADS specified more than once".into()));
                     }
                     top_heads = Some(k);
+                } else if is_word(&self.peek(), "CHANNELS") || is_word(&self.peek(), "CHANNEL") {
+                    self.advance();
+                    if top_channels.is_some() {
+                        return Err(ParseError(
+                            "DLA: TOP CHANNELS specified more than once".into(),
+                        ));
+                    }
+                    top_channels = Some(k);
                 } else {
-                    if is_word(&self.peek(), "COLUMNS") || is_word(&self.peek(), "COLUMN") {
+                    if is_word(&self.peek(), "COLUMNS")
+                        || is_word(&self.peek(), "COLUMN")
+                        || is_word(&self.peek(), "NEURONS")
+                        || is_word(&self.peek(), "NEURON")
+                    {
                         self.advance();
                     }
                     if top_columns.is_some() {
                         return Err(ParseError(
-                            "DLA: TOP COLUMNS specified more than once".into(),
+                            "DLA: TOP COLUMNS / NEURONS specified more than once".into(),
                         ));
                     }
                     top_columns = Some(k);
@@ -82,6 +95,7 @@ impl Parser {
             layers,
             top_columns,
             top_heads,
+            top_channels,
         })
     }
 

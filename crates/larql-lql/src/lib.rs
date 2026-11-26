@@ -4,6 +4,7 @@ pub mod describe;
 pub mod error;
 pub mod executor;
 pub mod help;
+pub mod json_output;
 pub(crate) mod lexer;
 pub mod live_scope;
 pub mod parser;
@@ -21,6 +22,7 @@ pub use executor::operations;
 pub use executor::Session;
 pub use executor::{AssertedFact, FactDurability, FactRealization, FactStatus};
 pub use executor::{RepresentationSource, DEFAULT_REPRESENTATION_SOURCE};
+pub use json_output::{run_batch_json_in, BatchJsonOutcome};
 pub use parser::parse;
 pub use repl::{
     run_batch, run_batch_outcome, run_batch_outcome_in, run_repl, run_repl_in, run_statement,
