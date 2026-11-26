@@ -386,7 +386,7 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
                 }
                 Some((kv, layer_index)) => {
                     let _site = cpu::ledger::in_site(cpu::ledger::Site::Attention);
-                    attention_into_kv(
+                    let (outputs, head_outs, weights) = attention_into_kv(
                         attention_op,
                         ops,
                         &inputs,
@@ -395,7 +395,18 @@ pub(super) fn execute_layer<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
                         backend,
                         kv,
                         layer_index,
-                    )?
+                        want_head_out,
+                        want_weights,
+                    )?;
+                    if let Some((_, tap_out)) = taps.as_mut() {
+                        if let Some(ho) = head_outs {
+                            tap_out.attn_head_out.insert(index, ho);
+                        }
+                        if let Some(w) = weights {
+                            tap_out.attn_weights.insert(index, w);
+                        }
+                    }
+                    outputs
                 }
                 None => {
                     let call = ops.call(attention_op, &inputs, layer.declared_norm_eps, hidden);

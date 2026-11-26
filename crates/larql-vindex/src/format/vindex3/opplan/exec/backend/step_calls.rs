@@ -256,6 +256,15 @@ impl<T: PlanBackend + Send + ?Sized> PlanBackend for std::sync::Arc<T> {
         (**self).attention_step(call)
     }
 
+    fn attention_step_with_captures(
+        &self,
+        call: AttentionStepCall<'_>,
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(AttentionStepOut, Option<Vec<f32>>, Option<Vec<f32>>), VindexError> {
+        (**self).attention_step_with_captures(call, want_head_out, want_weights)
+    }
+
     fn serves_attention_heads(&self) -> bool {
         (**self).serves_attention_heads()
     }

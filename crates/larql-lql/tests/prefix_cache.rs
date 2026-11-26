@@ -250,13 +250,13 @@ fn shared_prefix_and_extension_match_fresh_uncached_sessions_on_hybrid_lfm3() {
         );
     }
 
-    // DLA with TOP COLUMNS over prefix-cached prompts matches fresh session.
+    // DLA with TOP COLUMNS, TOP HEADS, and TOP CHANNELS over prefix-cached prompts matches fresh session.
     for prompt in [p1, p2, ext] {
         let got = cached
-            .dla(prompt, 5u32, 12u32, None, Some(20), None, Some(20))
+            .dla(prompt, 5u32, 12u32, None, Some(20), Some(8), Some(20))
             .unwrap();
         let fresh = open(&container)
-            .dla(prompt, 5u32, 12u32, None, Some(20), None, Some(20))
+            .dla(prompt, 5u32, 12u32, None, Some(20), Some(8), Some(20))
             .unwrap();
         assert_eq!(
             got.exact_logit_diff.to_bits(),
@@ -269,15 +269,25 @@ fn shared_prefix_and_extension_match_fresh_uncached_sessions_on_hybrid_lfm3() {
             "DLA total_dla mismatch on {prompt}"
         );
         assert_eq!(got.top_columns, fresh.top_columns);
+        assert_eq!(got.top_heads, fresh.top_heads);
         assert_eq!(got.top_channels, fresh.top_channels);
     }
 
-    // CAPTURE across residual, ffn.down_input, short_conv.gated_y, and logits at POSITIONS LAST
-    // on a prefix-cached prompt matches a fresh session bit-for-bit.
+    // CAPTURE across residual, ffn.down_input, short_conv.gated_y, attn.head_out, attn.weights,
+    // and logits at POSITIONS LAST (plus multi-position attn.weights POSITIONS (5..9)) on a
+    // prefix-cached prompt matches a fresh session bit-for-bit.
     let cases = [
         (CaptureSite::Residual, Some(CaptureLayers::One(3))),
         (CaptureSite::FfnDownInput, Some(CaptureLayers::One(2))),
         (CaptureSite::ShortConvGatedY, Some(CaptureLayers::One(2))),
+        (
+            CaptureSite::AttnHeadOut,
+            Some(CaptureLayers::Many(vec![1, 3])),
+        ),
+        (
+            CaptureSite::AttnWeights,
+            Some(CaptureLayers::Many(vec![1, 3])),
+        ),
         (CaptureSite::Logits, None),
     ];
     for (site, layers) in cases {
@@ -302,6 +312,34 @@ fn shared_prefix_and_extension_match_fresh_uncached_sessions_on_hybrid_lfm3() {
             site
         );
     }
+
+    // Multi-position attn.weights over the suffix of a prefix-cached prompt: [2, 4, 4, 9].
+    let range_pos = CapturePositions::List(vec![5, 6, 7, 8]);
+    let layers_13 = CaptureLayers::Many(vec![1, 3]);
+    let mw_spec = CaptureSpec {
+        site: CaptureSite::AttnWeights,
+        layers: Some(&layers_13),
+        prompt: ext,
+        continuation: None,
+        positions: &range_pos,
+    };
+    let mw_got = cached.capture(&mw_spec).unwrap();
+    let mw_fresh = open(&container).capture(&mw_spec).unwrap();
+    assert_eq!(mw_got.shape, vec![2, Q_HEADS, 4, 9]);
+    assert_eq!(mw_got.shape, mw_fresh.shape);
+    assert_eq!(
+        mw_got
+            .values()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>(),
+        mw_fresh
+            .values()
+            .iter()
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>(),
+        "prefix-cached multi-position attn.weights must match fresh session bit-for-bit"
+    );
 
     // Staging a live weight edit immediately invalidates the prefix cache, and DISCARD restores it.
     let base_p2 = cached.predict(p2, 5).unwrap().top;

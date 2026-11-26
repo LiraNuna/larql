@@ -142,6 +142,31 @@ pub trait PlanBackend: Sync {
     /// borrow another backend's step to fill the gap.
     fn attention_step(&self, call: AttentionStepCall<'_>) -> Result<AttentionStepOut, VindexError>;
 
+    /// [`Self::attention_step`], optionally capturing this position's pre-`o_proj`
+    /// gated per-head concatenation `[num_q_heads * head_dim]` and/or softmax
+    /// attention weights `[num_q_heads * (position + 1)]`.
+    #[allow(clippy::type_complexity)]
+    fn attention_step_with_captures(
+        &self,
+        call: AttentionStepCall<'_>,
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(AttentionStepOut, Option<Vec<f32>>, Option<Vec<f32>>), VindexError> {
+        if !want_head_out && !want_weights {
+            return Ok((self.attention_step(call)?, None, None));
+        }
+        let what = match (want_head_out, want_weights) {
+            (true, true) => "attn.head_out / attn.weights",
+            (true, false) => "attn.head_out",
+            (false, true) => "attn.weights",
+            (false, false) => unreachable!(),
+        };
+        Err(VindexError::Parse(format!(
+            "prefix-cached {what} capture is not served by the {} backend",
+            self.name()
+        )))
+    }
+
     /// V3-HEAD-OBS-1: whether this backend's softmax attention core can
     /// hand an observer one [`super::super::observe::AttentionHeadRecord`] per
     /// query head. `false` by default, and a request against a backend

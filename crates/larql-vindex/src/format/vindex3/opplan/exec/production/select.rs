@@ -350,6 +350,59 @@ impl ProductionBackend {
             output,
         })
     }
+
+    /// Decode/resumed-prefill step with optional capture of pre-`o_proj` gated head
+    /// outputs `[num_q_heads * head_dim]` and/or per-head softmax weights
+    /// `[num_q_heads * (step.position + 1)]`.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn attention_step_capturing(
+        step: AttentionStepCall<'_>,
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(AttentionStepOut, Option<Vec<f32>>, Option<Vec<f32>>), VindexError> {
+        let call = &step.op;
+        let pre = &call.inputs[0];
+        let ProjectedAttention {
+            qkv: (q, k, v),
+            gate,
+        } = Self::project_position_keeping(call, step.position, pre, None)?;
+        let mut head_out = want_head_out.then(Vec::new);
+        let mut weights = want_weights.then(Vec::new);
+        let output = Self::attend_position_tapped(
+            call,
+            step.position,
+            &q,
+            |p| {
+                if p == step.position {
+                    k.as_slice()
+                } else {
+                    step.rows().key(p)
+                }
+            },
+            |p| {
+                if p == step.position {
+                    v.as_slice()
+                } else {
+                    step.rows().value(p)
+                }
+            },
+            pre,
+            gate.as_deref(),
+            None,
+            None,
+            head_out.as_mut(),
+            weights.as_mut(),
+        )?;
+        Ok((
+            AttentionStepOut {
+                key: k,
+                value: v,
+                output,
+            },
+            head_out,
+            weights,
+        ))
+    }
 }
 
 /// The CPU executor's own re-quantised resident forms, offered as

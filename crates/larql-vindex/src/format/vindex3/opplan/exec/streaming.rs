@@ -257,8 +257,8 @@ pub fn prefill_prepared_observed<B: PlanBackend + ?Sized>(
 }
 
 /// [`prefill_prepared_observed`], additionally collecting batch-prefill taps
-/// (`ffn.down_input`, `ffn.down_output`, `short_conv.*`, and when `kv.position() == 0`,
-/// `attn.head_out` and `attn.weights`) on `tokens`.
+/// (`ffn.down_input`, `ffn.down_output`, `short_conv.*`, `attn.head_out`, and `attn.weights`)
+/// on `tokens` (both fresh and prefix-cached traversals).
 #[allow(clippy::too_many_arguments)]
 pub fn prefill_prepared_observed_with_taps<B: PlanBackend + ?Sized>(
     plan: &ComponentOpPlan,
@@ -274,16 +274,6 @@ pub fn prefill_prepared_observed_with_taps<B: PlanBackend + ?Sized>(
         return Err(VindexError::Parse(
             "endpoints-only operands require a distributed coordinator".into(),
         ));
-    }
-    if kv.position() > 0 {
-        if let Some((req, _)) = &taps {
-            if !req.attn_head_out.is_empty() || !req.attn_weights.is_empty() {
-                return Err(VindexError::Parse(
-                    "attn.head_out and attn.weights taps require a fresh (position 0) traversal"
-                        .into(),
-                ));
-            }
-        }
     }
     // The FULL geometry, KV and recurrent alike. `plan_kv_geometry` is
     // the KV-only adapter and refuses a hybrid plan outright, which was

@@ -213,7 +213,7 @@ impl AttentionOperands {
 ///
 /// Sequential by necessity (each position reads the previous ones'
 /// rows); the batch prefill is a semantic gate, not a fast path.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn attention_into_kv<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
     op: &AttentionOp,
     operands: &AttentionOperands,
@@ -223,18 +223,54 @@ pub(super) fn attention_into_kv<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
     backend: &B,
     kv: &mut K,
     layer_index: usize,
-) -> Result<Vec<Vec<f32>>, VindexError> {
+    want_head_out: bool,
+    want_weights: bool,
+) -> Result<(Vec<Vec<f32>>, Option<Vec<Vec<f32>>>, Option<Vec<Vec<f32>>>), VindexError> {
     let base = kv.position();
+    let total_seq_len = base + inputs.len();
     let mut outputs = Vec::with_capacity(inputs.len());
+    let mut head_outs = want_head_out.then(|| Vec::with_capacity(inputs.len()));
+    let mut weights = want_weights.then(|| Vec::with_capacity(inputs.len()));
     for offset in 0..inputs.len() {
+        let pos = base + offset;
         let call = operands.call(op, &inputs[offset..=offset], qk_norm_eps, hidden);
         kv.prepare_layer(layer_index);
         let rows = kv.rows(layer_index);
-        let out = backend.attention_step(AttentionStepCall::new(call, base + offset, rows)?)?;
+        let (out, ho, w) = if want_head_out || want_weights {
+            backend.attention_step_with_captures(
+                AttentionStepCall::new(call, pos, rows)?,
+                want_head_out,
+                want_weights,
+            )?
+        } else {
+            (
+                backend.attention_step(AttentionStepCall::new(call, pos, rows)?)?,
+                None,
+                None,
+            )
+        };
         kv.append(layer_index, out.key, out.value);
         outputs.push(out.output);
+        if let (Some(dst), Some(v)) = (head_outs.as_mut(), ho) {
+            dst.push(v);
+        }
+        if let (Some(dst), Some(w_raw)) = (weights.as_mut(), w) {
+            let cur_len = pos + 1;
+            if cur_len == total_seq_len {
+                dst.push(w_raw);
+            } else {
+                // Zero-pad causal future key columns so every suffix position shares
+                // the full `[num_q_heads, total_seq_len]` layout of a fresh pass.
+                let mut padded = vec![0.0f32; op.num_q_heads * total_seq_len];
+                for h in 0..op.num_q_heads {
+                    padded[h * total_seq_len..h * total_seq_len + cur_len]
+                        .copy_from_slice(&w_raw[h * cur_len..(h + 1) * cur_len]);
+                }
+                dst.push(padded);
+            }
+        }
     }
-    Ok(outputs)
+    Ok((outputs, head_outs, weights))
 }
 
 /// The one value of a `[1]` layer-scale operand — refused if the operand

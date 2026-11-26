@@ -141,13 +141,15 @@ fn statement_text(request: &CaptureRequest<'_>) -> String {
 }
 
 /// Every block holds one row per position, and every row has the same width.
-/// For `attn.weights`, each row holds `[num_q_heads, seq_len]` flattened, so the exported
-/// shape splits that tail axis into `(num_q_heads, seq_len)` — yielding `[n_layers, n_q_heads, seq_len]`
-/// for multi-layer single-position captures (`POSITIONS LAST`), `[n_q_heads, seq_len]` for a single
-/// layer & position, or `[..., positions, n_q_heads, seq_len]` when multiple positions are captured.
-fn checked_shape(
+/// For `attn.weights`, each raw row holds `[num_q_heads, seq_len]` flattened.
+/// - Single-position captures (`POSITIONS LAST`) export `[n_layers, n_q_heads, seq_len]`
+///   (or `[n_q_heads, seq_len]` for a single layer).
+/// - Multi-position captures (`POSITIONS (a..b)`, `POSITIONS ALL`) transpose each layer's
+///   `[n_pos, n_q_heads, seq_len]` into `[n_q_heads, n_pos, seq_len]` so the exported shape is
+///   `[n_layers, n_q_heads, n_pos, seq_len]` (or `[n_q_heads, n_pos, seq_len]` for a single layer).
+fn finalize_blocks_and_shape(
     site: CaptureSite,
-    blocks: &[Rows],
+    blocks: &mut [Rows],
     positions: usize,
     stacked: bool,
     seq_len: usize,
@@ -171,14 +173,29 @@ fn checked_shape(
             )));
         }
         let n_heads = width / seq_len;
+        if positions > 1 {
+            // Transpose each layer block from `[positions, n_heads, seq_len]` to
+            // `[n_heads, positions, seq_len]` (stored as `n_heads` rows of `positions * seq_len`).
+            for block in blocks.iter_mut() {
+                let mut transposed: Rows = Vec::with_capacity(n_heads);
+                for h in 0..n_heads {
+                    let mut head_plane = Vec::with_capacity(positions * seq_len);
+                    for pos_row in block.iter() {
+                        head_plane.extend_from_slice(&pos_row[h * seq_len..(h + 1) * seq_len]);
+                    }
+                    transposed.push(head_plane);
+                }
+                *block = transposed;
+            }
+        }
         let mut shape = Vec::with_capacity(4);
         if stacked {
             shape.push(blocks.len());
         }
+        shape.push(n_heads);
         if positions > 1 {
             shape.push(positions);
         }
-        shape.push(n_heads);
         shape.push(seq_len);
         return Ok(shape);
     }
@@ -276,7 +293,7 @@ impl Session {
         let (ops, overrides, cache_key) =
             prepared_operands_for_session(runtime, overlay, prepared_cache)?;
         let continuation = v3_continuation(runtime)?;
-        let blocks = batch::capture(
+        let mut blocks = batch::capture(
             runtime,
             &ops,
             cache_key.as_ref().map(|k| (prepared_cache.prefix(), k)),
@@ -289,7 +306,13 @@ impl Session {
         let path = PATH_INFER_PASS;
         let cross_check = serde_json::Value::Null;
         let stacked = matches!(spec.layers, Some(CaptureLayers::Many(_)));
-        let shape = checked_shape(site, &blocks, positions.len(), stacked, sequence.ids.len())?;
+        let shape = finalize_blocks_and_shape(
+            site,
+            &mut blocks,
+            positions.len(),
+            stacked,
+            sequence.ids.len(),
+        )?;
 
         let decode = |id: u32| tokenizer.decode(&[id], false).unwrap_or_default();
         let position_records: Vec<serde_json::Value> = positions
@@ -526,11 +549,11 @@ impl Session {
             out_dir.display()
         )];
         for (site, npy_path, sidecar_path) in &planned_paths {
-            let blocks = all_blocks.remove(site).unwrap_or_default();
+            let mut blocks = all_blocks.remove(site).unwrap_or_default();
             let site_stacked = site.per_layer() && stacked;
-            let shape = match checked_shape(
+            let shape = match finalize_blocks_and_shape(
                 *site,
-                &blocks,
+                &mut blocks,
                 positions.len(),
                 site_stacked,
                 sequence.ids.len(),

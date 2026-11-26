@@ -589,7 +589,7 @@ fn attn_weights_captures_full_and_sliding_distributions_and_refuses_short_conv()
         );
     }
 
-    // Single-layer ALL positions capture: [positions, n_q_heads, seq_len] with strict causal zeros.
+    // Single-layer ALL positions capture: [n_q_heads, n_pos, seq_len] with strict causal zeros.
     let weights_all = fx.path("attn_weights_all.npy");
     capture(
         &mut s,
@@ -597,10 +597,10 @@ fn attn_weights_captures_full_and_sliding_distributions_and_refuses_short_conv()
         &weights_all,
     );
     let all = read_npy(&weights_all);
-    assert_eq!(all.shape, vec![5, SC_Q_HEADS, 5]);
-    for q in 0..5 {
-        for h in 0..SC_Q_HEADS {
-            let base = (q * SC_Q_HEADS + h) * 5;
+    assert_eq!(all.shape, vec![SC_Q_HEADS, 5, 5]);
+    for h in 0..SC_Q_HEADS {
+        for q in 0..5 {
+            let base = (h * 5 + q) * 5;
             for k in (q + 1)..5 {
                 assert_eq!(
                     all.values[base + k],
@@ -609,7 +609,30 @@ fn attn_weights_captures_full_and_sliding_distributions_and_refuses_short_conv()
                 );
             }
             let sum: f32 = all.values[base..=base + q].iter().sum();
-            assert!((sum - 1.0).abs() < 1e-5, "q={q} h={h} sum={sum}");
+            assert!((sum - 1.0).abs() < 1e-5, "h={h} q={q} sum={sum}");
+        }
+    }
+
+    // Multi-layer range capture: POSITIONS (2..5) yields [n_layers, n_q_heads, n_pos, seq_len]
+    // and matches slicing the ALL capture bit-for-bit on layer 3!
+    let weights_range = fx.path("attn_weights_range.npy");
+    capture(
+        &mut s,
+        &format!("attn.weights AT LAYERS (1, 3) FOR \"{PROMPT}\" POSITIONS (2..5)"),
+        &weights_range,
+    );
+    let rng = read_npy(&weights_range);
+    assert_eq!(rng.shape, vec![2, SC_Q_HEADS, 3, 5]);
+    // Check L3 slice (layer idx 1) matches `all` at query positions 2, 3, 4 bit-for-bit!
+    for h in 0..SC_Q_HEADS {
+        for (pi, &q) in [2usize, 3, 4].iter().enumerate() {
+            let rng_base = ((SC_Q_HEADS + h) * 3 + pi) * 5;
+            let all_base = (h * 5 + q) * 5;
+            assert_eq!(
+                bits(&rng.values[rng_base..rng_base + 5]),
+                bits(&all.values[all_base..all_base + 5]),
+                "range slice mismatch at head {h} query {q}"
+            );
         }
     }
 

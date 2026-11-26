@@ -226,6 +226,15 @@ impl PlanBackend for ProductionBackend {
         Self::attention_step_tapped(step, None, None)
     }
 
+    fn attention_step_with_captures(
+        &self,
+        step: AttentionStepCall<'_>,
+        want_head_out: bool,
+        want_weights: bool,
+    ) -> Result<(AttentionStepOut, Option<Vec<f32>>, Option<Vec<f32>>), VindexError> {
+        Self::attention_step_capturing(step, want_head_out, want_weights)
+    }
+
     fn serves_attention_heads(&self) -> bool {
         true
     }

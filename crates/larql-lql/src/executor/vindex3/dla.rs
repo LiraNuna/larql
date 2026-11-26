@@ -220,9 +220,7 @@ impl Session {
             Ok(())
         };
 
-        let can_prefix_cache = taps.attn_head_out.is_empty()
-            && taps.attn_weights.is_empty()
-            && prefix_cache::plan_supports_prefix_cache(runtime);
+        let can_prefix_cache = prefix_cache::plan_supports_prefix_cache(runtime);
         let (observed, tap_out) = if let Some(ref key) = cache_key.filter(|_| can_prefix_cache) {
             let (mut kv, prefix_len) = prefix_cache::acquire_prefix_state(
                 runtime,
@@ -474,7 +472,9 @@ impl Session {
             let head_out_rows = tap_out.attn_head_out.get(&l).ok_or_else(|| {
                 LqlError::Execution(format!("DLA: layer {l} attn.head_out was not captured"))
             })?;
-            let head_out = &head_out_rows[last];
+            let head_out = head_out_rows.last().ok_or_else(|| {
+                LqlError::Execution(format!("DLA: layer {l} attn.head_out empty"))
+            })?;
             let q_rows = attn_op.num_q_heads * attn_op.head_dim;
             let w_o = ops
                 .attention_o_proj_f32(plan, l)

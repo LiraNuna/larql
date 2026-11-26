@@ -91,8 +91,6 @@ pub(super) fn capture_many(
 
     let can_prefix_cache = prefix.is_some()
         && !positions.is_empty()
-        && taps.attn_head_out.is_empty()
-        && taps.attn_weights.is_empty()
         && prefix_cache::plan_supports_prefix_cache(runtime);
     let min_pos = positions.iter().copied().min().unwrap_or(0);
     let (mut cached_kv, prefix_len) = if can_prefix_cache {
