@@ -11,9 +11,30 @@ use crate::executor::tuning::{
     DESCRIBE_GATE_THRESHOLD,
 };
 
+/// Scale an unscaled embedding query (`embed_scale <= 1.0`) to unit RMS
+/// (`‖q‖₂ = √hidden`), matching what per-layer RMSNorm delivers to FFN gate
+/// rows during inference and what `embed_scale = √hidden` (Gemma 2/3/4)
+/// already produces upfront. Without this, models with `embed_scale = 1.0`
+/// (LFM3, Qwen3, Llama 3, …) have raw `w1 · q` scores ~√d smaller than
+/// `DESCRIBE_GATE_THRESHOLD`, dropping every edge.
+pub(crate) fn normalize_describe_query(
+    query: &mut larql_vindex::ndarray::Array1<f32>,
+    embed_scale: f32,
+) {
+    if embed_scale > 1.0 || query.is_empty() {
+        return;
+    }
+    let mean_sq = query.iter().map(|v| v * v).sum::<f32>() / query.len() as f32;
+    let rms = mean_sq.sqrt();
+    if rms > 1e-6 && rms < 0.25 {
+        query.mapv_inplace(|v| v / rms);
+    }
+}
+
 /// Tokenise `entity` and build a query vector by averaging its token
-/// embeddings. Returns `Ok(None)` when the entity tokenises to nothing
-/// — the caller emits the "(not found)" line.
+/// embeddings (RMS-normalized to unit RMS when `embed_scale <= 1.0`).
+/// Returns `Ok(None)` when the entity tokenises to nothing — the caller
+/// emits the "(not found)" line.
 pub(super) fn describe_build_query(
     entity: &str,
     ctx: &crate::executor::knowledge::BrowseCtx<'_>,
@@ -21,7 +42,12 @@ pub(super) fn describe_build_query(
     let (embed, embed_scale) = ctx.embeddings()?;
     let tokenizer = larql_vindex::load_vindex_tokenizer(ctx.path)
         .map_err(|e| LqlError::exec("failed to load tokenizer", e))?;
-    crate::executor::helpers::entity_query_vec(&tokenizer, &embed, embed_scale, entity)
+    let mut query =
+        crate::executor::helpers::entity_query_vec(&tokenizer, &embed, embed_scale, entity)?;
+    if let Some(q) = query.as_mut() {
+        normalize_describe_query(q, embed_scale);
+    }
+    Ok(query)
 }
 
 /// Filter `all_layers` down to those covered by the requested band /
@@ -201,5 +227,30 @@ mod tests {
         let layers: Vec<usize> = vec![0, 5, 12];
         let out = describe_scan_layers(&bands(), &layers, None, None);
         assert_eq!(out, layers);
+    }
+
+    #[test]
+    fn normalize_describe_query_rescales_unscaled_embeddings_to_unit_rms() {
+        // Hidden 2048 with L2 norm ~1.0 -> RMS ~0.022 (LFM3/Qwen3/Llama shape).
+        let mut q = larql_vindex::ndarray::Array1::from_elem(2048, 1.0 / (2048.0_f32).sqrt());
+        normalize_describe_query(&mut q, 1.0);
+        let rms = (q.iter().map(|v| v * v).sum::<f32>() / q.len() as f32).sqrt();
+        assert!((rms - 1.0).abs() < 1e-5, "expected unit RMS, got {rms}");
+    }
+
+    #[test]
+    fn normalize_describe_query_leaves_prescaled_embeddings_unchanged() {
+        // Gemma-style embed_scale = sqrt(d) > 1.0 must not be rescaled.
+        let orig = larql_vindex::ndarray::Array1::from_vec(vec![0.2, -0.4, 0.1, 0.3]);
+        let mut q = orig.clone();
+        normalize_describe_query(&mut q, 50.6);
+        assert_eq!(q, orig);
+    }
+
+    #[test]
+    fn normalize_describe_query_handles_zero_vector_without_nan() {
+        let mut q = larql_vindex::ndarray::Array1::zeros(16);
+        normalize_describe_query(&mut q, 1.0);
+        assert!(q.iter().all(|&v| v == 0.0));
     }
 }
