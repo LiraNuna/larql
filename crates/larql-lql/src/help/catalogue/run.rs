@@ -137,9 +137,11 @@ pub(super) static CAPTURE: StatementHelp = StatementHelp {
     aliases: &["ACTIVATIONS"],
     group: HelpGroup::Run,
     syntax: &[
-        "CAPTURE <site> [AT LAYER <n> | AT LAYERS (<n>, ...)] FOR \"<prompt>\"",
+        "CAPTURE <site> [AT LAYER <n> | AT LAYERS (<n>, ...) | AT LAYERS <lo>-<hi>] FOR \"<prompt>\"",
         "        [CONTINUE \"<text>\" | CONTINUE TOKENS (<id>, ...) | GENERATE <n>]",
         "        [POSITIONS {PROMPT_END | REPLY | ALL | LAST | (<p>, ...)}] TO \"<file>.npy\";",
+        "CAPTURE (<site1>, <site2>, ...) [AT LAYER <n> | AT LAYERS (<n>, ...) | AT LAYERS <lo>-<hi>]",
+        "        FOR \"<prompt>\" [CONTINUE ... | GENERATE <n>] [POSITIONS ...] TO \"<dir>\";",
     ],
     does: &[
         "Runs the bound program over a sequence, as INFER runs it, and writes the values it computed",
@@ -180,6 +182,7 @@ pub(super) static CAPTURE: StatementHelp = StatementHelp {
         "CAPTURE residual AT LAYER 1 FOR \"The capital of France is\" POSITIONS ALL TO \"residual.npy\";",
         "CAPTURE ffn.down_input AT LAYERS (0, 1) FOR \"The capital of France is\" CONTINUE \" Paris\" POSITIONS REPLY TO \"down_input.npy\";",
         "CAPTURE final FOR \"The capital of France is\" GENERATE 4 POSITIONS REPLY TO \"final.npy\";",
+        "CAPTURE (post_attention, residual, logits) AT LAYERS 0-3 FOR \"The capital of France is\" TO \"cap_dir\";",
     ],
     needs: &[Need::Vindex3, Need::Tokenizer],
     effect: &[

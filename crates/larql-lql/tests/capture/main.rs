@@ -4,6 +4,7 @@
 
 mod hyper_connection;
 mod live;
+mod multi_site;
 mod parity;
 mod parsing;
 mod refusals;

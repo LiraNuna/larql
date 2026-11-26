@@ -20,7 +20,12 @@ fn is_word(token: &Token, word: &str) -> bool {
 impl Parser {
     pub(crate) fn parse_capture(&mut self) -> Result<Statement, ParseError> {
         self.expect_ident_eq(TOPIC)?;
-        let site = self.parse_capture_site()?;
+        let multi = matches!(self.peek(), Token::LParen);
+        let sites = if multi {
+            self.parse_capture_sites()?
+        } else {
+            vec![self.parse_capture_site()?]
+        };
         let layers = self.parse_capture_layers()?;
         if !self.check_keyword(Keyword::For) {
             let options: &[&str] = if layers.is_some() {
@@ -28,7 +33,12 @@ impl Parser {
             } else {
                 &["AT", "FOR"]
             };
-            return Err(self.expected_one_of(&format!("CAPTURE {}", site.name()), options, TOPIC));
+            let label = if multi {
+                "CAPTURE (...)".to_string()
+            } else {
+                format!("CAPTURE {}", sites[0].name())
+            };
+            return Err(self.expected_one_of(&label, options, TOPIC));
         }
         self.advance();
         let prompt = self.expect_string()?;
@@ -45,14 +55,48 @@ impl Parser {
         self.advance();
         let output = self.expect_string()?;
         self.eat_semicolon();
-        Ok(Statement::Capture {
-            site,
-            layers,
-            prompt,
-            continuation,
-            positions: positions.unwrap_or(CapturePositions::Last),
-            output,
-        })
+        let positions = positions.unwrap_or(CapturePositions::Last);
+        if multi {
+            Ok(Statement::CaptureMulti {
+                sites,
+                layers,
+                prompt,
+                continuation,
+                positions,
+                output_dir: output,
+            })
+        } else {
+            Ok(Statement::Capture {
+                site: sites[0],
+                layers,
+                prompt,
+                continuation,
+                positions,
+                output,
+            })
+        }
+    }
+
+    /// A parenthesised comma-separated list of capture sites: `(post_attention, residual, logits)`.
+    fn parse_capture_sites(&mut self) -> Result<Vec<CaptureSite>, ParseError> {
+        self.advance(); // consume `(`
+        if matches!(self.peek(), Token::RParen) {
+            return Err(self.unknown_site(")"));
+        }
+        let mut sites = Vec::new();
+        loop {
+            sites.push(self.parse_capture_site()?);
+            if matches!(self.peek(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        if !matches!(self.peek(), Token::RParen) {
+            return Err(self.expected_one_of("CAPTURE (<sites>", &[",", ")"], TOPIC));
+        }
+        self.advance(); // consume `)`
+        Ok(sites)
     }
 
     /// A site name: one word, or two joined by a dot.
@@ -94,7 +138,21 @@ impl Parser {
         }
         if self.check_keyword(Keyword::Layers) {
             self.advance();
-            return Ok(Some(CaptureLayers::Many(self.parse_column_list()?)));
+            if matches!(self.peek(), Token::LParen) {
+                return Ok(Some(CaptureLayers::Many(self.parse_column_list()?)));
+            }
+            let lo = self.expect_u32()? as usize;
+            if matches!(self.peek(), Token::Dash) {
+                self.advance();
+                let hi = self.expect_u32()? as usize;
+                if hi < lo {
+                    return Err(ParseError(format!(
+                        "AT LAYERS {lo}-{hi}: end layer {hi} is before start layer {lo}"
+                    )));
+                }
+                return Ok(Some(CaptureLayers::Many((lo..=hi).collect())));
+            }
+            return Ok(Some(CaptureLayers::Many(vec![lo])));
         }
         Err(self.expected_one_of("CAPTURE <site> AT", &["LAYER", "LAYERS"], TOPIC))
     }

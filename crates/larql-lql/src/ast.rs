@@ -227,6 +227,17 @@ pub enum Statement {
         positions: CapturePositions,
         output: String,
     },
+    /// `CAPTURE (<site1>, <site2>, …) [AT LAYER <n> | AT LAYERS (<n>, …) | AT LAYERS <lo>-<hi>] FOR
+    /// "<prompt>" [CONTINUE … | GENERATE <n>] [POSITIONS …] TO "<dir>"` (VINDEX3): capture several sites in one
+    /// forward pass and write `<dir>/<site>.npy` + `<dir>/<site>.npy.json` for each.
+    CaptureMulti {
+        sites: Vec<CaptureSite>,
+        layers: Option<CaptureLayers>,
+        prompt: String,
+        continuation: Option<CaptureContinuation>,
+        positions: CapturePositions,
+        output_dir: String,
+    },
     /// `SHOW PROVENANCE ["object"]` (VINDEX3): hashes and lineage per
     /// directory entry — payload and segment digests, what an entry was
     /// compiled from, what model the container derives from.
@@ -370,7 +381,7 @@ impl Statement {
             Statement::ShowRepresentations { .. } => "SHOW REPRESENTATIONS",
             Statement::ShowTensors { .. } => "SHOW TENSORS",
             Statement::ExportWeight { .. } => "EXPORT WEIGHT",
-            Statement::Capture { .. } => "CAPTURE",
+            Statement::Capture { .. } | Statement::CaptureMulti { .. } => "CAPTURE",
             Statement::ShowProvenance { .. } => "SHOW PROVENANCE",
             Statement::ShowAuthority => "SHOW AUTHORITY",
             Statement::VerifyRepresentation { .. } => "VERIFY REPRESENTATION",

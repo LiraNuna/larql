@@ -58,10 +58,20 @@ pub struct CaptureSpec<'a> {
     pub positions: &'a CapturePositions,
 }
 
-/// The arguments of one `CAPTURE`, as the statement gives them.
+/// The arguments of one single-site `CAPTURE`, as the statement gives them.
 pub(crate) struct CaptureRequest<'a> {
     pub spec: CaptureSpec<'a>,
     pub output: &'a str,
+}
+
+/// The arguments of one multi-site `CAPTURE (...) TO "<dir>"`.
+pub(crate) struct CaptureMultiRequest<'a> {
+    pub sites: &'a [CaptureSite],
+    pub layers: Option<&'a CaptureLayers>,
+    pub prompt: &'a str,
+    pub continuation: Option<&'a CaptureContinuation>,
+    pub positions: &'a CapturePositions,
+    pub output_dir: &'a str,
 }
 
 /// The values one capture computed, in memory, with the provenance `CAPTURE`'s sidecar records.
@@ -341,5 +351,220 @@ impl Session {
             format!("  sidecar: {}", sidecar_path.display()),
             format!("  {elapsed_ms:.0}ms"),
         ])
+    }
+
+    /// Execute `CAPTURE (<site1>, <site2>, …) … TO "<dir>"` in a single batch prefill traversal,
+    /// writing `<dir>/<site>.npy` and `<dir>/<site>.npy.json` for every requested site.
+    pub(crate) fn exec_capture_multi(
+        &self,
+        request: &CaptureMultiRequest<'_>,
+    ) -> Result<Vec<String>, LqlError> {
+        let (root, runtime, tokenizer, overlay, bos, patch_files) = match &self.backend {
+            Backend::Vindex3 {
+                path,
+                runtime,
+                tokenizer,
+                overlay,
+                bos_token,
+                patch_files,
+                ..
+            } => (path, runtime, tokenizer, overlay, *bos_token, patch_files),
+            Backend::None => return Err(LqlError::NoBackend),
+            _ => return Err(refused(
+                "CAPTURE runs a VINDEX3 container's program, and this session is not bound to one",
+            )),
+        };
+        let tokenizer = tokenizer.as_ref().ok_or_else(|| {
+            LqlError::Execution(
+                "CAPTURE needs a tokenizer and this container carries no tokenizer.json — \
+                 token-id capability only"
+                    .into(),
+            )
+        })?;
+        if request.sites.is_empty() {
+            return Err(refused("CAPTURE (...) requires at least one site"));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(dup) = request.sites.iter().find(|s| !seen.insert(**s)) {
+            return Err(refused(format!("site {} is listed twice", dup.name())));
+        }
+        let plan_layers = runtime.plan().layers.len();
+        let any_per_layer = request.sites.iter().any(|s| s.per_layer());
+        let layers = if any_per_layer {
+            let first_per_layer = request
+                .sites
+                .iter()
+                .copied()
+                .find(|s| s.per_layer())
+                .unwrap();
+            sequence::layers(first_per_layer, request.layers, plan_layers)?
+        } else {
+            sequence::layers(request.sites[0], request.layers, plan_layers)?
+        };
+
+        let out_dir = std::path::Path::new(request.output_dir);
+        if out_dir.is_file() {
+            return Err(refused(format!(
+                "output {} is an existing file, expected a directory for multi-site CAPTURE",
+                out_dir.display()
+            )));
+        }
+        let mut planned_paths: Vec<(CaptureSite, std::path::PathBuf, std::path::PathBuf)> =
+            Vec::with_capacity(request.sites.len());
+        for &site in request.sites {
+            let npy = out_dir.join(format!("{}.npy", site.name()));
+            let sidecar = std::path::PathBuf::from(format!("{}.json", npy.display()));
+            if npy.exists() {
+                return Err(refused(format!("{} already exists", npy.display())));
+            }
+            if sidecar.exists() {
+                return Err(refused(format!("{} already exists", sidecar.display())));
+            }
+            planned_paths.push((site, npy, sidecar));
+        }
+
+        let (index, index_sha256) = container_index(root)?;
+        let start = std::time::Instant::now();
+        let sequence = sequence::build(
+            runtime,
+            overlay,
+            tokenizer,
+            bos,
+            request.prompt,
+            request.continuation,
+        )?;
+        let positions = sequence::positions(request.positions, &sequence)?;
+        let overrides: Option<OperandOverrides> = execution_overrides(runtime, overlay)?;
+        let continuation = v3_continuation(runtime)?;
+        let mut all_blocks = batch::capture_many(
+            runtime,
+            overrides.as_ref(),
+            &continuation,
+            &sequence.ids,
+            request.sites,
+            &layers,
+            &positions,
+        )?;
+
+        std::fs::create_dir_all(out_dir)
+            .map_err(|e| LqlError::exec(format!("create directory {}", out_dir.display()), e))?;
+
+        let decode = |id: u32| tokenizer.decode(&[id], false).unwrap_or_default();
+        let position_records: Vec<serde_json::Value> = positions
+            .iter()
+            .map(|&p| {
+                serde_json::json!({
+                    "position": p,
+                    "part": if p < sequence.prompt_len { "prompt" } else { "continuation" },
+                    "token_id": sequence.ids[p],
+                    "token": decode(sequence.ids[p]),
+                    "predicts_token_id": sequence.predicts(p),
+                })
+            })
+            .collect();
+        let executes = provenance::executes(overlay, overrides.is_some());
+        let stacked = matches!(request.layers, Some(CaptureLayers::Many(_)));
+
+        let mut written_files: Vec<std::path::PathBuf> = Vec::new();
+        let mut out_lines = vec![format!(
+            "Captured {} site(s) in 1 pass to {}:",
+            planned_paths.len(),
+            out_dir.display()
+        )];
+        for (site, npy_path, sidecar_path) in &planned_paths {
+            let blocks = all_blocks.remove(site).unwrap_or_default();
+            let site_stacked = site.per_layer() && stacked;
+            let shape = match checked_shape(&blocks, positions.len(), site_stacked) {
+                Ok(s) => s,
+                Err(e) => {
+                    let refs: Vec<&std::path::Path> = written_files
+                        .iter()
+                        .map(std::path::PathBuf::as_path)
+                        .collect();
+                    return Err(remove_partial(&refs, e));
+                }
+            };
+            let npy_sha256 = match write_npy(npy_path, &shape, &blocks) {
+                Ok(digest) => {
+                    written_files.push(npy_path.clone());
+                    digest
+                }
+                Err(e) => {
+                    let refs: Vec<&std::path::Path> = written_files
+                        .iter()
+                        .map(std::path::PathBuf::as_path)
+                        .collect();
+                    return Err(remove_partial(&refs, e));
+                }
+            };
+            let single_req = CaptureRequest {
+                spec: CaptureSpec {
+                    site: *site,
+                    layers: if site.per_layer() {
+                        request.layers
+                    } else {
+                        None
+                    },
+                    prompt: request.prompt,
+                    continuation: request.continuation,
+                    positions: request.positions,
+                },
+                output: &npy_path.display().to_string(),
+            };
+            let provenance = serde_json::json!({
+                "schema": SIDECAR_SCHEMA,
+                "statement": statement_text(&single_req),
+                "container": container_path(root),
+                "index_sha256": index_sha256,
+                "model": index.model,
+                "site": site.name(),
+                "layers": if site.per_layer() { serde_json::json!(layers) } else { serde_json::Value::Null },
+                "positions": position_records,
+                "sequence": {
+                    "token_ids": sequence.ids,
+                    "prompt_tokens": sequence.prompt_len,
+                    "prompt": request.prompt,
+                    "prompt_encoding": PROMPT_ENCODING,
+                    "bos_token_id": bos,
+                    "continuation": sequence.continuation,
+                    "continuation_encoding": CONTINUATION_ENCODING,
+                },
+                "executes": executes,
+                "patches": provenance::patches(overlay, patch_files),
+                "live_tensors": provenance::live_tensors(overlay),
+                "execution": {
+                    "path": PATH_INFER_PASS,
+                    "binding": provenance::binding(runtime),
+                    "cross_check": serde_json::Value::Null,
+                },
+                "dtype": DESCR.label(),
+                "shape": shape,
+                "npy_sha256": npy_sha256,
+                "larql_version": LARQL_VERSION,
+            });
+            let refs: Vec<&std::path::Path> = written_files
+                .iter()
+                .map(std::path::PathBuf::as_path)
+                .collect();
+            write_sidecar(sidecar_path, &provenance, &refs)?;
+            written_files.push(sidecar_path.clone());
+            out_lines.push(format!(
+                "  {:<20} {:?} ({}) → {}  sha256 {}",
+                site.name(),
+                shape,
+                DESCR.label(),
+                npy_path.display(),
+                &npy_sha256[..16],
+            ));
+        }
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
+        out_lines.push(format!(
+            "  sequence: {} token(s), {} from the prompt; positions {}; executes: {} weights; {elapsed_ms:.0}ms",
+            sequence.ids.len(),
+            sequence.prompt_len,
+            index_list(&positions),
+            executes,
+        ));
+        Ok(out_lines)
     }
 }
