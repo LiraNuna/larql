@@ -81,6 +81,15 @@ pub fn seam_operands(
             operands.push(planned.operand);
         }
     }
+    // Depthwise 1D convolution kernels (`[channels, 1, kernel_size]`) are loaded through
+    // `OperandSource::load` in `ShortConvOperands::load`, so they sit inside the live-weight seam.
+    for layer in &plan.layers {
+        if let LayerAttention::ShortConv(op) = &layer.attention {
+            if op.conv_weight.tensor == tensor && !operands.contains(&op.conv_weight) {
+                operands.push(op.conv_weight.clone());
+            }
+        }
+    }
     if operands.is_empty() {
         return Err(LiveWeightRefusal::NotExecuted {
             tensor: tensor.to_string(),

@@ -108,7 +108,7 @@ pub struct LiveTensor {
     /// The graph object whose canonical representation holds the tensor.
     pub object: String,
     pub tensor: String,
-    pub shape: [usize; 2],
+    pub shape: Vec<usize>,
     /// SHA-256 of [`Self::bytes`]: equal to hashing this tensor's bytes in a container compiled from the ops.
     pub sha256: String,
     /// The whole tensor as COMPILE would store it: BF16, little-endian, row-major.

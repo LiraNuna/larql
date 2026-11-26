@@ -493,7 +493,12 @@ fn write_patched_segment(
     let at = &edited[0].0;
     let by_tensor: BTreeMap<&str, (u64, &Resolved<'_>)> = edited
         .iter()
-        .map(|(a, r)| (a.tensor.name.as_str(), (a.tensor.shape[1] as u64, r)))
+        .map(|(a, r)| {
+            let cols = locate::matrix_dims(&a.tensor.shape)
+                .expect("shape checked in locate")
+                .1 as u64;
+            (a.tensor.name.as_str(), (cols, r))
+        })
         .collect();
     let planned: Vec<PlannedTensor> = at
         .header

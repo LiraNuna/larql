@@ -82,8 +82,8 @@ pub struct StagedWeightDelta {
 }
 
 impl Session {
-    /// The typed operation behind `UPDATE WEIGHTS`: stage `delta` on `cols` of `row` of `tensor`. Everything
-    /// checkable is checked before anything is staged. A `BEGIN PATCH` recording records it.
+    /// The typed operation behind `UPDATE WEIGHTS SET DELTA`: stage `delta` on `cols` of `row` of `tensor`.
+    /// Everything checkable is checked before anything is staged. A `BEGIN PATCH` recording records it.
     pub fn stage_weight_delta(
         &mut self,
         tensor: &str,
@@ -91,21 +91,87 @@ impl Session {
         cols: &[usize],
         delta: f32,
     ) -> Result<StagedWeightDelta, LqlError> {
-        let path = match &self.backend {
-            Backend::Vindex3 { path, .. } => path.clone(),
-            Backend::Vindex { .. } => {
-                return Err(LqlError::Execution(
-                    "UPDATE WEIGHTS edits the stored weights of a VINDEX3 container; \
-                     this session is bound to a VINDEX2 vindex"
-                        .into(),
-                ))
-            }
-            _ => return Err(LqlError::NoBackend),
-        };
         let edits: Vec<WeightEdit> = cols
             .iter()
             .map(|&col| WeightEdit { row, col, delta })
             .collect();
+        self.stage_weight_edits(tensor, edits)
+    }
+
+    /// The typed operation behind `UPDATE WEIGHTS SET VALUE`: stage per-element deltas so every listed
+    /// `(row, col)` of `tensor` lands on the nearest BF16 to `value` (so `VALUE = 0.0` writes exact `0x0000`).
+    pub fn stage_weight_value(
+        &mut self,
+        tensor: &str,
+        row: usize,
+        cols: &[usize],
+        value: f32,
+    ) -> Result<StagedWeightDelta, LqlError> {
+        if !value.is_finite() {
+            return Err(refused("VALUE must be finite"));
+        }
+        let target_bits = wp::bf16::round_to_bf16(value as f64)
+            .ok_or_else(|| refused(format!("VALUE {value} overflows bfloat16")))?;
+        let target_f32 = bf16_to_f32(target_bits);
+        let path = self.v3_weight_patch_path()?;
+        let zero_edits: Vec<WeightEdit> = cols
+            .iter()
+            .map(|&col| WeightEdit {
+                row,
+                col,
+                delta: 0.0,
+            })
+            .collect();
+        let current = wp::plan_weight_patch(
+            &path,
+            &WeightPatch {
+                tensor: tensor.to_string(),
+                edits: zero_edits,
+            },
+        )
+        .map_err(refused)?;
+        let mut edits = Vec::with_capacity(current.len());
+        for cur in &current {
+            let old_f32 = bf16_to_f32(cur.old_bits);
+            let delta = if target_bits == 0x0000 {
+                -old_f32
+            } else {
+                target_f32 - old_f32
+            };
+            let achieved = wp::bf16::patched_bits(cur.old_bits, delta);
+            if achieved != Some(target_bits) {
+                return Err(refused(format!(
+                    "[{}, {}]: no single f32 delta reaches BF16 {target_bits:#06x} from {:#06x}",
+                    cur.row, cur.col, cur.old_bits
+                )));
+            }
+            edits.push(WeightEdit {
+                row: cur.row,
+                col: cur.col,
+                delta,
+            });
+        }
+        self.stage_weight_edits(tensor, edits)
+    }
+
+    fn v3_weight_patch_path(&self) -> Result<std::path::PathBuf, LqlError> {
+        match &self.backend {
+            Backend::Vindex3 { path, .. } => Ok(path.clone()),
+            Backend::Vindex { .. } => Err(LqlError::Execution(
+                "UPDATE WEIGHTS edits the stored weights of a VINDEX3 container; \
+                 this session is bound to a VINDEX2 vindex"
+                    .into(),
+            )),
+            _ => Err(LqlError::NoBackend),
+        }
+    }
+
+    fn stage_weight_edits(
+        &mut self,
+        tensor: &str,
+        edits: Vec<WeightEdit>,
+    ) -> Result<StagedWeightDelta, LqlError> {
+        let path = self.v3_weight_patch_path()?;
         // Everything checkable is checked here, before anything is staged.
         let planned = wp::plan_weight_patch(
             &path,
@@ -150,11 +216,21 @@ impl Session {
         row: usize,
         cols: &[usize],
         delta: f32,
+        set_value: bool,
     ) -> Result<Vec<String>, LqlError> {
-        let staged = self.stage_weight_delta(tensor, row, cols, delta)?;
+        let staged = if set_value {
+            self.stage_weight_value(tensor, row, cols, delta)?
+        } else {
+            self.stage_weight_delta(tensor, row, cols, delta)?
+        };
         let planned = &staged.elements;
+        let mode_label = if set_value {
+            format!("value {delta}")
+        } else {
+            format!("delta {delta}")
+        };
         let mut out = vec![format!(
-            "Staged: {} element(s) of {tensor}, row {row}, delta {delta} (BF16, nearest-even of the exact sum)",
+            "Staged: {} element(s) of {tensor}, row {row}, {mode_label} (BF16, nearest-even of the exact sum)",
             planned.len()
         )];
         for e in planned.iter().take(SHOWN_ELEMENTS) {

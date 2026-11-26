@@ -425,7 +425,7 @@ fn check_edits(root: &Path, segment: &str, target: &LedgerTarget) -> Vec<String>
         ));
     }
     let (rows, cols) = match tensor.shape.as_slice() {
-        [r, c] => (*r, *c),
+        [r, c] | [r, 1, c] => (*r, *c),
         _ => return vec![format!("ledger target `{}` is not a matrix", target.tensor)],
     };
     let file = match std::fs::File::open(&path) {

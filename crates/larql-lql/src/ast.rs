@@ -122,12 +122,14 @@ pub enum Statement {
         set: Vec<Assignment>,
         conditions: Vec<Condition>,
     },
-    /// `UPDATE WEIGHTS SET DELTA = <f> WHERE TENSOR = "<name>" AND ROW = <n>
+    /// `UPDATE WEIGHTS SET {DELTA | VALUE} = <f> WHERE TENSOR = "<name>" AND ROW = <n>
     /// AND COL = <n> | COL IN (<n>, …)` — stage an edit of stored weights.
     ///
-    /// Not a knowledge edit: it names real elements of one stored tensor.
-    /// `delta` applies to the value stored in the bound container, rounded
-    /// once to bfloat16, so staging twice never accumulates. Compiled by
+    /// Not a knowledge edit: it names real elements of one stored tensor (a 2D matrix or
+    /// 3D `[channels, 1, kernel_size]` depthwise-conv kernel). When `set_value` is false,
+    /// `delta` applies to the value stored in the bound container, rounded once to bfloat16;
+    /// when `set_value` is true, `delta` is the target value (computed against each stored
+    /// element so `SET VALUE = 0.0` writes exact `0x0000` BF16 bits). Compiled by
     /// `COMPILE CURRENT INTO VINDEX` into a new container; see
     /// `larql_vindex::format::vindex3::weight_patch`.
     UpdateWeights {
@@ -135,6 +137,7 @@ pub enum Statement {
         row: usize,
         cols: Vec<usize>,
         delta: f32,
+        set_value: bool,
     },
     /// `REMOVE DIRECTION "<operand file>" FROM "<tensor>" COLUMNS (<n>, …) SCALE <f> NUMERICS "<profile>"`:
     /// stage a structured `remove_direction` on a VINDEX3 container's stored weights, declared by its

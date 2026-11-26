@@ -53,6 +53,16 @@ pub(super) fn locate_all<'a>(
     Ok(out)
 }
 
+/// Logical `(rows, cols)` of a patchable BF16 tensor: 2D matrices `[r, c]` and
+/// 3D depthwise-conv1d kernels `[channels, 1, kernel_size]` (row-major `[channels, kernel_size]`
+/// in memory, where `ROW` indexes channels and `COL` indexes temporal taps).
+pub(super) fn matrix_dims(shape: &[usize]) -> Option<(usize, usize)> {
+    match shape {
+        [r, c] | [r, 1, c] => Some((*r, *c)),
+        _ => None,
+    }
+}
+
 pub(super) fn locate(
     src: &Path,
     index: &Vindex3Index,
@@ -93,14 +103,18 @@ pub(super) fn locate(
             dtype: tensor.dtype,
         });
     }
-    let (rows, cols) = match tensor.shape.as_slice() {
-        [r, c] => (*r, *c),
-        _ => {
-            return Err(WeightPatchError::NotAMatrix {
-                tensor: name.to_string(),
-                shape: tensor.shape,
-            })
-        }
+    let dims = match patch {
+        DeclaredPatch::Operations(_) => match tensor.shape.as_slice() {
+            [r, c] => Some((*r, *c)),
+            _ => None,
+        },
+        DeclaredPatch::Deltas(_) | DeclaredPatch::Results(_) => matrix_dims(&tensor.shape),
+    };
+    let Some((rows, cols)) = dims else {
+        return Err(WeightPatchError::NotAMatrix {
+            tensor: name.to_string(),
+            shape: tensor.shape,
+        });
     };
     for (row, col) in patch.coords() {
         if row >= rows || col >= cols {
@@ -162,7 +176,9 @@ pub(super) fn resolve_edits<'a>(
         return Ok(Resolved::Operations(p));
     }
     let file = File::open(src.join(&at.entry.segment))?;
-    let cols = at.tensor.shape[1] as u64;
+    let cols = matrix_dims(&at.tensor.shape)
+        .expect("shape checked in locate")
+        .1 as u64;
     let name = patch.tensor();
     let read_old = |row: usize, col: usize| -> Result<u16, WeightPatchError> {
         let mut stored = [0u8; BF16_BYTES as usize];

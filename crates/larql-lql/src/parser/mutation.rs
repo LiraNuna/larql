@@ -184,15 +184,31 @@ impl Parser {
 }
 
 impl Parser {
-    /// `UPDATE WEIGHTS SET DELTA = <f> WHERE TENSOR = "<name>" AND ROW = <n>
+    /// `UPDATE WEIGHTS SET {DELTA | VALUE} = <f> WHERE TENSOR = "<name>" AND ROW = <n>
     /// AND COL = <n> | COL IN (<n>, …)`; the `UPDATE` is already consumed.
     ///
-    /// `DELTA`, `TENSOR`, `ROW` and `COL` are read as words in this position,
+    /// `DELTA`, `VALUE`, `TENSOR`, `ROW` and `COL` are read as words in this position,
     /// not reserved, so they stay usable as names everywhere else.
     fn parse_update_weights(&mut self) -> Result<Statement, ParseError> {
         self.expect_keyword(Keyword::Weights)?;
         self.expect_keyword(Keyword::Set)?;
-        self.expect_ident_eq("DELTA")?;
+        let set_value = match self.peek() {
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("DELTA") => {
+                self.advance();
+                false
+            }
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("VALUE") => {
+                self.advance();
+                true
+            }
+            _ => {
+                return Err(self.expected_one_of(
+                    "UPDATE WEIGHTS SET",
+                    &["DELTA", "VALUE"],
+                    "UPDATE WEIGHTS",
+                ))
+            }
+        };
         self.expect_token(&Token::Eq)?;
         let delta = self.expect_signed_f32()?;
         self.expect_keyword(Keyword::Where)?;
@@ -225,6 +241,7 @@ impl Parser {
             row,
             cols,
             delta,
+            set_value,
         })
     }
 }

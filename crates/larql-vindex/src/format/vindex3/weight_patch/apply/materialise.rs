@@ -17,7 +17,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use super::super::error::WeightPatchError;
-use super::locate::{locate_all, Located, Resolved};
+use super::locate::{locate_all, matrix_dims, Located, Resolved};
 use super::{
     hex, require_patchable, validate_all, DeclaredPatch, BF16_BYTES, CANDIDATE_JSON, SEGMENTS_DIR,
 };
@@ -115,7 +115,7 @@ pub struct MaterialisedTensor {
     pub representation: String,
     /// The tensor's name in the segment table.
     pub tensor: String,
-    pub shape: [usize; 2],
+    pub shape: Vec<usize>,
     /// The whole tensor: BF16, little-endian, row-major.
     pub bytes: Vec<u8>,
 }
@@ -142,12 +142,13 @@ pub fn materialise_declared_patches(
         let file = File::open(src.join(&at.entry.segment))?;
         let mut bytes = vec![0u8; at.tensor.len as usize];
         read_exact_at(&file, &mut bytes, at.payload_start + at.tensor.offset)?;
-        patch_tensor_bytes(&mut bytes, at.tensor.shape[1] as u64, resolved);
+        let (_, cols) = matrix_dims(&at.tensor.shape).expect("shape checked in locate");
+        patch_tensor_bytes(&mut bytes, cols as u64, resolved);
         out.push(MaterialisedTensor {
             object: at.entry.object.clone(),
             representation: at.canonical_id.clone(),
             tensor: at.tensor.name.clone(),
-            shape: [at.tensor.shape[0], at.tensor.shape[1]],
+            shape: at.tensor.shape.clone(),
             bytes,
         });
     }

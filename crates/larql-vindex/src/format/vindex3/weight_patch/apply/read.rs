@@ -5,7 +5,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use super::super::error::WeightPatchError;
-use super::locate::locate;
+use super::locate::{locate, matrix_dims};
 use super::{DeclaredPatch, ResultEdit, ResultPatch, BF16_BYTES};
 use crate::format::filenames::INDEX_JSON;
 use crate::format::vindex3::graph::{ObjectKind, SystemGraph};
@@ -22,7 +22,8 @@ pub fn tensor_shape(src: &Path, tensor: &str) -> Result<[usize; 2], WeightPatchE
         edits: Vec::new(),
     });
     let at = locate(src, &index, &probe)?;
-    Ok([at.tensor.shape[0], at.tensor.shape[1]])
+    let (rows, cols) = matrix_dims(&at.tensor.shape).expect("shape checked in locate");
+    Ok([rows, cols])
 }
 
 /// The kind of the graph object whose representation holds `tensor` (the token embedding, a decoder stack, ...), as the
@@ -85,7 +86,7 @@ pub fn read_bf16_tensor(
         }],
     });
     let at = locate(src, &index, &probe)?;
-    let [rows, cols] = [at.tensor.shape[0], at.tensor.shape[1]];
+    let (rows, cols) = matrix_dims(&at.tensor.shape).expect("shape checked in locate");
     let mut file = File::open(src.join(&at.entry.segment))?;
     file.seek(SeekFrom::Start(at.payload_start + at.tensor.offset))?;
     let mut bytes = vec![0u8; rows * cols * BF16_BYTES as usize];

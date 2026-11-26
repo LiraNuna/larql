@@ -30,9 +30,15 @@ pub(crate) fn live_weight_lines(overlay: &KnowledgeOverlay) -> Vec<String> {
                 view.tensors().len()
             )];
             for tensor in view.tensors() {
+                let shape = tensor
+                    .shape
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 out.push(format!(
-                    "    {} [{}, {}]  sha256 {}",
-                    tensor.tensor, tensor.shape[0], tensor.shape[1], tensor.sha256
+                    "    {} [{shape}]  sha256 {}",
+                    tensor.tensor, tensor.sha256
                 ));
             }
             out.push(format!(

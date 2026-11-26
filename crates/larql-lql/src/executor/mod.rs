@@ -586,7 +586,8 @@ impl Session {
                 row,
                 cols,
                 delta,
-            } => self.exec_update_weights(tensor, *row, cols, *delta),
+                set_value,
+            } => self.exec_update_weights(tensor, *row, cols, *delta, *set_value),
             Statement::RemoveDirection {
                 operand,
                 tensor,

@@ -13,6 +13,7 @@ fn a_single_column() {
         row,
         cols,
         delta,
+        set_value,
     } = parsed(
         r#"UPDATE WEIGHTS SET DELTA = 0.125 WHERE TENSOR = "26.mlp.down_proj.weight" AND ROW = 100 AND COL = 200;"#,
     )
@@ -20,8 +21,34 @@ fn a_single_column() {
         panic!("not UpdateWeights")
     };
     assert_eq!(
-        (tensor.as_str(), row, cols, delta),
-        ("26.mlp.down_proj.weight", 100, vec![200], 0.125)
+        (tensor.as_str(), row, cols, delta, set_value),
+        ("26.mlp.down_proj.weight", 100, vec![200], 0.125, false)
+    );
+}
+
+#[test]
+fn set_value_parses_for_3d_conv_kernels() {
+    let Statement::UpdateWeights {
+        tensor,
+        row,
+        cols,
+        delta,
+        set_value,
+    } = parsed(
+        r#"UPDATE WEIGHTS SET VALUE = 0.0 WHERE TENSOR = "23.conv.conv.weight" AND ROW = 1023 AND COL IN (0, 1, 2, 3, 4, 5, 6);"#,
+    )
+    else {
+        panic!("not UpdateWeights")
+    };
+    assert_eq!(
+        (tensor.as_str(), row, cols, delta, set_value),
+        (
+            "23.conv.conv.weight",
+            1023,
+            vec![0, 1, 2, 3, 4, 5, 6],
+            0.0,
+            true
+        )
     );
 }
 
