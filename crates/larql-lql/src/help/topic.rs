@@ -80,6 +80,7 @@ topic_enum! {
         RemoveDirection,
         AddLowRank,
         PatchUnit,
+        ProjectOut,
         // Patches
         BeginPatch,
         SavePatch,

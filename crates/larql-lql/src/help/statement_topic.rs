@@ -36,6 +36,7 @@ impl Statement {
             Statement::RemoveDirection { .. } => StatementTopic::RemoveDirection,
             Statement::AddLowRank { .. } => StatementTopic::AddLowRank,
             Statement::PatchUnit { .. } => StatementTopic::PatchUnit,
+            Statement::ProjectOut { .. } => StatementTopic::ProjectOut,
             Statement::Merge { .. } => StatementTopic::Merge,
             Statement::Rebalance { .. } => StatementTopic::Rebalance,
             Statement::ShowRelations { .. } => StatementTopic::ShowRelations,

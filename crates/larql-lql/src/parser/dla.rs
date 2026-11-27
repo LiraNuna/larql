@@ -155,6 +155,119 @@ impl Parser {
         Ok((prompt, target_a, target_b))
     }
 
+    pub(crate) fn parse_project(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume PROJECT
+        if !is_word(&self.peek(), "OUT") {
+            return Err(self.expected_after("PROJECT"));
+        }
+        self.advance(); // consume OUT
+        let target_a = self.parse_dla_target("PROJECT OUT")?;
+        if matches!(self.peek(), Token::Dash) || is_word(&self.peek(), "VS") {
+            self.advance();
+        } else {
+            return Err(self.expected_one_of(
+                "PROJECT OUT <target_a>",
+                &["-", "VS"],
+                "PROJECT OUT",
+            ));
+        }
+        let target_b = self.parse_dla_target("-")?;
+
+        if self.check_keyword(Keyword::On) || self.check_keyword(Keyword::At) {
+            self.advance();
+        }
+        let layers = if self.check_keyword(Keyword::Layer) {
+            self.advance();
+            CaptureLayers::One(self.expect_u32()? as usize)
+        } else if self.check_keyword(Keyword::Layers) {
+            self.advance();
+            self.parse_dla_layer_spec()?.ok_or_else(|| {
+                ParseError("PROJECT OUT requires an explicit layer list or range".into())
+            })?
+        } else {
+            return Err(self.expected_one_of(
+                "PROJECT OUT <A> - <B>",
+                &["ON LAYERS", "AT LAYERS", "LAYERS"],
+                "PROJECT OUT",
+            ));
+        };
+
+        let mut target = crate::ast::ProjectOutTarget::W2;
+        let mut scale = 1.0f64;
+        loop {
+            if is_word(&self.peek(), "TARGET") {
+                self.advance();
+                target = match self.peek() {
+                    Token::Ident(ref s)
+                        if s.eq_ignore_ascii_case("W2") || s.eq_ignore_ascii_case("FFN") =>
+                    {
+                        self.advance();
+                        crate::ast::ProjectOutTarget::W2
+                    }
+                    Token::Ident(ref s)
+                        if s.eq_ignore_ascii_case("O_PROJ") || s.eq_ignore_ascii_case("ATTN") =>
+                    {
+                        self.advance();
+                        crate::ast::ProjectOutTarget::OProj
+                    }
+                    Token::Ident(ref s)
+                        if s.eq_ignore_ascii_case("CONV_OUT") || s.eq_ignore_ascii_case("CONV") =>
+                    {
+                        self.advance();
+                        crate::ast::ProjectOutTarget::ConvOut
+                    }
+                    Token::Keyword(Keyword::All) => {
+                        self.advance();
+                        crate::ast::ProjectOutTarget::All
+                    }
+                    Token::Ident(ref s) if s.eq_ignore_ascii_case("ALL") => {
+                        self.advance();
+                        crate::ast::ProjectOutTarget::All
+                    }
+                    _ => {
+                        return Err(self.expected_one_of(
+                            "PROJECT OUT ... TARGET",
+                            &["W2", "O_PROJ", "CONV_OUT", "ALL"],
+                            "PROJECT OUT",
+                        ));
+                    }
+                };
+            } else if is_word(&self.peek(), "SCALE") {
+                self.advance();
+                let negative = matches!(self.peek(), Token::Dash);
+                if negative {
+                    self.advance();
+                }
+                let mag = match self.peek() {
+                    Token::NumberLit(v) => {
+                        self.advance();
+                        v
+                    }
+                    Token::IntegerLit(v) => {
+                        self.advance();
+                        v as f64
+                    }
+                    other => {
+                        return Err(ParseError(format!(
+                            "expected a number for SCALE, got {other:?}"
+                        )));
+                    }
+                };
+                scale = if negative { -mag } else { mag };
+            } else {
+                break;
+            }
+        }
+        self.eat_semicolon();
+        Ok(Statement::ProjectOut {
+            target_a,
+            target_b,
+            layers,
+            target,
+            scale,
+        })
+    }
+
     fn parse_dla_target(&mut self, clause: &str) -> Result<DlaTarget, ParseError> {
         if is_word(&self.peek(), "ID") {
             self.advance();

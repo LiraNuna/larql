@@ -81,6 +81,7 @@ impl Statement {
             | Statement::LoadSoftPrompt { .. }
             | Statement::ClearSoftPrompt
             | Statement::PatchUnit { .. }
+            | Statement::ProjectOut { .. }
             | Statement::Help { .. } => false,
         }
     }

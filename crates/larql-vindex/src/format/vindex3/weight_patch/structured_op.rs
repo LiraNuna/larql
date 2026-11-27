@@ -219,7 +219,7 @@ impl StructuredWeightOp {
     }
 
     /// The op as the interpreter takes it, with its operands decoded.
-    pub(super) fn op_kind(&self) -> Result<OpKind, WeightPatchError> {
+    pub(crate) fn op_kind(&self) -> Result<OpKind, WeightPatchError> {
         let (operand, alpha) = self.operands()?;
         if self.scale_columns_only {
             if !self.operand.is_empty() {

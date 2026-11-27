@@ -275,6 +275,20 @@ fn execute_json_statement(
                     "data": { "cleared": cleared },
                 }));
             }
+            Statement::ProjectOut {
+                target_a,
+                target_b,
+                layers,
+                target,
+                scale,
+            } => {
+                let summary = session.project_out(target_a, target_b, layers, *target, *scale)?;
+                return Ok(json!({
+                    "ok": true,
+                    "statement": "PROJECT OUT",
+                    "data": summary,
+                }));
+            }
             _ => {}
         }
     }

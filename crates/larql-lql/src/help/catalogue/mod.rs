@@ -51,6 +51,7 @@ pub fn statement(topic: StatementTopic) -> &'static StatementHelp {
         StatementTopic::RemoveDirection => &weights::REMOVE_DIRECTION,
         StatementTopic::AddLowRank => &weights::ADD_LOW_RANK,
         StatementTopic::PatchUnit => &weights::PATCH_UNIT,
+        StatementTopic::ProjectOut => &weights::PROJECT_OUT,
         StatementTopic::BeginPatch => &patches::BEGIN_PATCH,
         StatementTopic::SavePatch => &patches::SAVE_PATCH,
         StatementTopic::ApplyPatch => &patches::APPLY_PATCH,

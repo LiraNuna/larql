@@ -416,6 +416,16 @@ pub enum Statement {
         scale: f64,
     },
 
+    /// `PROJECT OUT {<tokA> | ID <idA>} - {<tokB> | ID <idB>} [ON | AT] LAYERS (...) [TARGET {W2 | O_PROJ | CONV_OUT | ALL}] [SCALE <f>];`
+    /// Exact sandwich-norm-aware rank-1 nullspace projection composing over any active overlay.
+    ProjectOut {
+        target_a: DlaTarget,
+        target_b: DlaTarget,
+        layers: CaptureLayers,
+        target: ProjectOutTarget,
+        scale: f64,
+    },
+
     // ── Help ──
     /// `HELP;` prints every statement's syntax; `HELP <topic>;` prints one page of the help catalogue
     /// (`crate::help`). `topic` is the words after `HELP`, as written. Read-only, and it needs no backend.
@@ -489,6 +499,7 @@ impl Statement {
             Statement::LoadSoftPrompt { .. } => "LOAD SOFT_PROMPT",
             Statement::ClearSoftPrompt => "CLEAR SOFT_PROMPT",
             Statement::PatchUnit { .. } => "PATCH",
+            Statement::ProjectOut { .. } => "PROJECT OUT",
             Statement::Help { .. } => "HELP",
             Statement::Pipe { .. } => "|> (pipe)",
         }
@@ -554,6 +565,26 @@ pub enum LayerBand {
     Output,
     /// All layers: syntax + knowledge + output
     All,
+}
+
+/// Target projection matrices for `PROJECT OUT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectOutTarget {
+    W2,
+    OProj,
+    ConvOut,
+    All,
+}
+
+impl ProjectOutTarget {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::W2 => "w2",
+            Self::OProj => "o_proj",
+            Self::ConvOut => "conv_out",
+            Self::All => "all",
+        }
+    }
 }
 
 /// Target unit specification for counterfactual `PATCH ... AT LAYER <l> SCALE <s>;`.

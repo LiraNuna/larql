@@ -241,8 +241,46 @@ pub(super) static PATCH_UNIT: StatementHelp = StatementHelp {
     related: &[
         "DLA",
         "DIFF",
+        "PROJECT OUT",
         "DISCARD WEIGHT EDITS",
         "REMOVE DIRECTION",
         "WEIGHTS",
+    ],
+};
+
+pub(super) static PROJECT_OUT: StatementHelp = StatementHelp {
+    name: "PROJECT OUT",
+    aliases: &["NULLSPACE PROJECTION"],
+    group: HelpGroup::Weights,
+    syntax: &[
+        "PROJECT OUT {\"<tok_a>\" | ID <id_a>} - {\"<tok_b>\" | ID <id_b>} [ON | AT] LAYERS (<n>, <lo>..<hi>, ...) [TARGET {W2 | O_PROJ | CONV_OUT | ALL}] [SCALE <number>];",
+    ],
+    does: &[
+        "Stages an exact sandwich-norm-aware rank-1 nullspace projection removing the logit",
+        "difference direction (tok_a - tok_b) from the output projection matrices on the selected",
+        "layers: W <- W - scale * u_hat * (u_hat^T W) where u_hat folds final_norm and each",
+        "sublayer's post_ffn_norm / post_attention_norm weight (automatically preserving zero-gamma",
+        "RMS ballast channels with zero blowup).",
+        "Defaults to TARGET W2 and SCALE 1.0. Composes directly over any mounted OVERLAY",
+        "SAFETENSORS / OVERLAY LORA and exports cleanly via EXPORT SAFETENSORS.",
+    ],
+    examples: &[
+        "PROJECT OUT \" Paris\" - \" London\" ON LAYERS (20..24);",
+        "PROJECT OUT ID 4741 - ID 4595 ON LAYERS (20, 22, 23) TARGET W2 SCALE 1.0;",
+    ],
+    needs: &[Need::Vindex3, Need::Tokenizer],
+    effect: STAGED_EFFECT,
+    operands: &[],
+    refusals: &[
+        "The session is not bound to a canonical VINDEX3 container or carries no tokenizer.json.",
+        "Either target encodes to zero or more than one token, or both resolve to the same ID.",
+        "No matching target projection exists on the requested layers, or SCALE is non-finite/zero.",
+    ],
+    related: &[
+        "OVERLAY",
+        "EXPORT SAFETENSORS",
+        "REMOVE DIRECTION",
+        "LOGIT DIFF",
+        "DISCARD WEIGHT EDITS",
     ],
 };

@@ -17,7 +17,7 @@
 
 use super::Backend;
 use super::Session;
-use crate::ast::Condition;
+use crate::ast::{Condition, ExplainMode, Statement};
 use crate::error::LqlError;
 use crate::executor::predicate::{EdgePredicate, PredicateScope};
 
@@ -96,6 +96,101 @@ pub(super) fn require_layer_feature(
 }
 
 impl Session {
+    /// Execute a statement against a remote backend.
+    pub(super) fn execute_remote(&mut self, stmt: &Statement) -> Result<Vec<String>, LqlError> {
+        match stmt {
+            Statement::Use { target } => self.exec_use(target),
+            Statement::Describe {
+                entity, band, mode, ..
+            } => self.remote_describe(entity, *band, *mode),
+            Statement::Walk {
+                prompt,
+                top,
+                layers,
+                ..
+            } => self.remote_walk(prompt, *top, layers.as_ref()),
+            Statement::Infer {
+                prompt,
+                top,
+                compare,
+                route: _,
+                generate,
+            } => {
+                if generate.is_some() {
+                    return Err(LqlError::Execution(
+                        "INFER GENERATE is not supported on a remote backend yet".into(),
+                    ));
+                }
+                self.remote_infer(prompt, *top, *compare)
+            }
+            Statement::Stats { .. } => self.remote_stats(),
+            Statement::ShowRelations {
+                mode,
+                with_examples,
+                ..
+            } => self.remote_show_relations(*mode, *with_examples),
+            Statement::Insert {
+                entity,
+                relation,
+                target,
+                layer,
+                confidence,
+                alpha: _,
+                mode: _,
+            } => {
+                // Remote backend doesn't forward ALPHA or MODE — the
+                // HTTP protocol doesn't have a schema for them yet.
+                // Local backend honours both via `exec_insert`.
+                self.remote_insert(entity, relation, target, *layer, *confidence)
+            }
+            Statement::Delete { conditions } => self.remote_delete(conditions),
+            Statement::Update { set, conditions } => self.remote_update(set, conditions),
+            Statement::Select {
+                source: _,
+                fields: _,
+                conditions,
+                nearest: _,
+                order: _,
+                limit,
+            } => self.remote_select(conditions, *limit),
+            Statement::Explain {
+                prompt,
+                mode,
+                layers,
+                band,
+                verbose: _,
+                top,
+                relations_only,
+                with_attention,
+            } => match mode {
+                ExplainMode::Infer => self.remote_explain_infer(
+                    prompt,
+                    *top,
+                    *band,
+                    *relations_only,
+                    *with_attention,
+                ),
+                ExplainMode::Walk => self.remote_walk(prompt, *top, layers.as_ref()),
+            },
+            Statement::ApplyPatch { path } => self.remote_apply_patch(path),
+            Statement::ShowPatches => self.remote_show_patches(),
+            Statement::RemovePatch { path } => self.remote_remove_patch(path),
+            Statement::Help { topic } => crate::help::help_lines(topic.as_deref()),
+            Statement::Pipe { left, right } => {
+                let mut out = self.execute(left)?;
+                out.extend(self.execute(right)?);
+                Ok(out)
+            }
+            _ => Err(LqlError::Execution(
+                "this statement is not supported on a remote backend. \
+                 Supported: DESCRIBE, WALK, INFER, EXPLAIN INFER, EXPLAIN WALK, SELECT, STATS, \
+                 SHOW RELATIONS, INSERT, DELETE, UPDATE, APPLY PATCH, SHOW PATCHES, REMOVE PATCH, USE. \
+                 TRACE requires a local vindex (USE \"path.vindex\")."
+                    .into(),
+            )),
+        }
+    }
+
     /// Connect to a remote larql-server.
     pub(crate) fn exec_use_remote(&mut self, url: &str) -> Result<Vec<String>, LqlError> {
         let url = url.trim_end_matches('/').to_string();
