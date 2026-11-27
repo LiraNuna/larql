@@ -330,7 +330,46 @@ pub fn prefill_prepared_embeds<B: PlanBackend + ?Sized>(
         Some(&mut *kv),
         Mutation::None,
         None,
+        false,
     )?;
     kv.set_position(base + embeds.len());
+    Ok(out)
+}
+
+/// Fast forward-only batch prefill that stops at the final-normed hidden state (`FinalState::Hidden`)
+/// and skips the full vocabulary `lm_head` projection (`logits == None`). Callers such as `LOGIT DIFF`
+/// can then project ONLY the 2 target vocabulary rows via
+/// [`PreparedOperands::head_over_normed_for_tokens`] with bit-exact parity.
+pub fn prefill_prepared_hidden<B: PlanBackend + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
+    tokens: &[u32],
+    backend: &B,
+    kv: &mut dyn KvState,
+) -> Result<FinalOutput, VindexError> {
+    ops.ensure_stack_ready()?;
+    if matches!(ops.slice(), prepared::ExecutionSlice::Endpoints) {
+        return Err(VindexError::Parse(
+            "endpoints-only operands require a distributed coordinator".into(),
+        ));
+    }
+    kv.prepare_continuation(
+        &continuation::plan_continuation_geometry(plan).map_err(VindexError::Parse)?,
+    )?;
+    let base = kv.position();
+    let out = traverse_inputs_with_taps(
+        plan,
+        ops,
+        tokens,
+        None,
+        backend,
+        None,
+        &mut |_| Ok(()),
+        Some(&mut *kv),
+        Mutation::None,
+        None,
+        false,
+    )?;
+    kv.set_position(base + tokens.len());
     Ok(out)
 }

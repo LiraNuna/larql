@@ -247,5 +247,39 @@ pub(super) static DLA: StatementHelp = StatementHelp {
         "A component without an output head, or with a non-single-stream residual topology.",
         "Pending stored-weight ops the session cannot execute exactly (HELP UPDATE WEIGHTS; lists when).",
     ],
-    related: &["INFER", "CAPTURE", "TRACE", "REMOVE DIRECTION", "UPDATE WEIGHTS"],
+    related: &["INFER", "CAPTURE", "TRACE", "LOGIT DIFF", "REMOVE DIRECTION", "UPDATE WEIGHTS"],
+};
+
+pub(super) static LOGIT_DIFF: StatementHelp = StatementHelp {
+    name: "LOGIT DIFF",
+    aliases: &["DIFF LOGIT DIFF"],
+    group: HelpGroup::Run,
+    syntax: &[
+        "LOGIT DIFF \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>};",
+        "DIFF LOGIT DIFF \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>};",
+    ],
+    does: &[
+        "Fast forward-only computation of logit(token_a) - logit(token_b) at the prompt's final",
+        "position. Skips all per-layer taps, weight dequantization, and the full vocabulary",
+        "projection — evaluating ONLY the 2 target vocabulary rows with bit-exact parity to DLA.",
+        "DIFF LOGIT DIFF compares the active session state (OVERLAY / SOFT_PROMPT / live edits)",
+        "against the untouched bound Base container, caching Base final hidden states across",
+        "subsequent overlays for rapid multi-checkpoint screening.",
+    ],
+    examples: &[
+        "LOGIT DIFF \"The capital of France is\" FOR \" Paris\" VS \" London\";",
+        "LOGIT DIFF \"The capital of France is\" FOR ID 4741 VS ID 4595;",
+    ],
+    needs: &[Need::Vindex3, Need::Tokenizer],
+    effect: &[
+        "Read-only.",
+        concat!(executed_by!(), " run the same program: LOGIT DIFF computes with pending stored-weight ops"),
+        "and active overlays or soft prompts, or is refused, exactly as INFER is.",
+    ],
+    operands: &[],
+    refusals: &[
+        "The session is not bound to a VINDEX3 container, or the container carries no tokenizer.json.",
+        "FOR or VS encodes to zero or more than one token, or lies outside the vocabulary.",
+    ],
+    related: &["DLA", "DIFF", "INFER", "OVERLAY", "LOAD SOFT_PROMPT"],
 };

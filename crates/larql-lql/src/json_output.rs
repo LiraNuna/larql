@@ -161,6 +161,30 @@ fn execute_json_statement(
                     "data": report,
                 }));
             }
+            Statement::LogitDiff {
+                prompt,
+                target_a,
+                target_b,
+            } => {
+                let report = session.logit_diff(prompt, target_a.clone(), target_b.clone())?;
+                return Ok(json!({
+                    "ok": true,
+                    "statement": "LOGIT DIFF",
+                    "data": report,
+                }));
+            }
+            Statement::DiffLogitDiff {
+                prompt,
+                target_a,
+                target_b,
+            } => {
+                let report = session.diff_logit_diff(prompt, target_a.clone(), target_b.clone())?;
+                return Ok(json!({
+                    "ok": true,
+                    "statement": "DIFF LOGIT DIFF",
+                    "data": report,
+                }));
+            }
             Statement::Infer {
                 prompt,
                 top,

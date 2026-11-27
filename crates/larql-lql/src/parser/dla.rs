@@ -122,6 +122,39 @@ impl Parser {
         })
     }
 
+    pub(crate) fn parse_logit(&mut self) -> Result<Statement, ParseError> {
+        self.advance(); // consume LOGIT
+        if !self.check_keyword(Keyword::Diff) {
+            return Err(self.expected_after("LOGIT"));
+        }
+        self.advance(); // consume DIFF
+        let (prompt, target_a, target_b) = self.parse_logit_diff_body("LOGIT DIFF")?;
+        Ok(Statement::LogitDiff {
+            prompt,
+            target_a,
+            target_b,
+        })
+    }
+
+    pub(crate) fn parse_logit_diff_body(
+        &mut self,
+        topic: &str,
+    ) -> Result<(String, DlaTarget, DlaTarget), ParseError> {
+        let prompt = self.expect_string()?;
+        if !self.check_keyword(Keyword::For) {
+            return Err(self.expected_one_of(&format!("{topic} \"<prompt>\""), &["FOR"], topic));
+        }
+        self.advance();
+        let target_a = self.parse_dla_target("FOR")?;
+        if !is_word(&self.peek(), "VS") {
+            return Err(self.expected_one_of("FOR <target>", &["VS"], topic));
+        }
+        self.advance();
+        let target_b = self.parse_dla_target("VS")?;
+        self.eat_semicolon();
+        Ok((prompt, target_a, target_b))
+    }
+
     fn parse_dla_target(&mut self, clause: &str) -> Result<DlaTarget, ParseError> {
         if is_word(&self.peek(), "ID") {
             self.advance();

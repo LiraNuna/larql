@@ -12,7 +12,9 @@ use std::sync::Mutex;
 use larql_kv::CanonicalKvState;
 use larql_vindex::format::vindex3::opplan::exec::continuation::plan_continuation_geometry;
 use larql_vindex::format::vindex3::opplan::exec::prepared::PreparedOperands;
-use larql_vindex::format::vindex3::opplan::exec::{prefill_prepared, prefill_prepared_embeds};
+use larql_vindex::format::vindex3::opplan::exec::{
+    prefill_prepared, prefill_prepared_embeds, prefill_prepared_hidden,
+};
 
 use super::{PrefixCacheKey, SoftPromptState, V3Runtime};
 use crate::error::LqlError;
@@ -26,6 +28,7 @@ struct PrefixSnapshot {
     tokens: Vec<u32>,
     kv: CanonicalKvState,
     last_logits: Option<Vec<f32>>,
+    last_hidden: Option<Vec<f32>>,
 }
 
 #[derive(Default)]
@@ -74,6 +77,24 @@ impl PrefixStateCache {
         guard.entries.iter().rev().find_map(|e| {
             if e.tokens == tokens {
                 e.last_logits.as_ref().map(|l| (e.kv.clone(), l.clone()))
+            } else {
+                None
+            }
+        })
+    }
+
+    pub(crate) fn find_exact_hidden(
+        &self,
+        key: &PrefixCacheKey,
+        tokens: &[u32],
+    ) -> Option<Vec<f32>> {
+        let guard = self.inner.lock().unwrap();
+        if guard.key.as_ref() != Some(key) {
+            return None;
+        }
+        guard.entries.iter().rev().find_map(|e| {
+            if e.tokens == tokens {
+                e.last_hidden.clone()
             } else {
                 None
             }
@@ -154,6 +175,32 @@ impl PrefixStateCache {
             tokens,
             kv,
             last_logits,
+            last_hidden: None,
+        });
+    }
+
+    pub(crate) fn record_snapshot_hidden(
+        &self,
+        key: &PrefixCacheKey,
+        tokens: Vec<u32>,
+        kv: CanonicalKvState,
+        last_hidden: Vec<f32>,
+    ) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.key.as_ref() != Some(key) {
+            return;
+        }
+        guard.last_prompt = tokens.clone();
+        if let Some(pos) = guard.entries.iter().position(|e| e.tokens == tokens) {
+            guard.entries.remove(pos);
+        } else if guard.entries.len() >= MAX_SNAPSHOTS {
+            guard.entries.remove(0);
+        }
+        guard.entries.push(PrefixSnapshot {
+            tokens,
+            kv,
+            last_logits: None,
+            last_hidden: Some(last_hidden),
         });
     }
 
@@ -180,6 +227,7 @@ impl PrefixStateCache {
             tokens,
             kv,
             last_logits,
+            last_hidden: None,
         });
     }
 
@@ -244,7 +292,7 @@ pub(crate) fn acquire_prefix_state(
     let lcp = cache.shared_prefix_with_last(key, prompt_ids, limit);
     if lcp >= MIN_SHARED_PREFIX_TOKENS {
         let mut kv = initial_kv_state(runtime, ops, cache, key, soft_prompt)?;
-        let prefix_out = prefill_prepared(
+        let _ = prefill_prepared_hidden(
             runtime.plan(),
             ops,
             &prompt_ids[..lcp],
@@ -252,12 +300,7 @@ pub(crate) fn acquire_prefix_state(
             &mut kv,
         )
         .map_err(|e| LqlError::exec("v3 prefix prefill failed", e))?;
-        cache.record_prefix_only(
-            key,
-            prompt_ids[..lcp].to_vec(),
-            kv.clone(),
-            prefix_out.logits,
-        );
+        cache.record_prefix_only(key, prompt_ids[..lcp].to_vec(), kv.clone(), None);
         return Ok((kv, lcp));
     }
     let kv = initial_kv_state(runtime, ops, cache, key, soft_prompt)?;

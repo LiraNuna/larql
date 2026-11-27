@@ -17,7 +17,9 @@ impl Statement {
         match self {
             Statement::Extract { .. } => StatementTopic::Extract,
             Statement::Compile { .. } => StatementTopic::Compile,
-            Statement::Diff { .. } | Statement::DiffDla { .. } => StatementTopic::Diff,
+            Statement::Diff { .. }
+            | Statement::DiffDla { .. }
+            | Statement::DiffLogitDiff { .. } => StatementTopic::Diff,
             Statement::Use { .. } => StatementTopic::Use,
             Statement::Overlay { .. } => StatementTopic::Overlay,
             Statement::LoadSoftPrompt { .. } => StatementTopic::LoadSoftPrompt,
@@ -66,6 +68,7 @@ impl Statement {
             Statement::RemovePatch { .. } => StatementTopic::RemovePatch,
             Statement::Trace { .. } => StatementTopic::Trace,
             Statement::Dla { .. } => StatementTopic::Dla,
+            Statement::LogitDiff { .. } => StatementTopic::LogitDiff,
             Statement::Help { .. } => StatementTopic::Help,
             Statement::Pipe { .. } => StatementTopic::Pipe,
         }

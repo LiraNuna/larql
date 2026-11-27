@@ -47,7 +47,7 @@ pub(super) fn traverse_with_taps<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
     taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
 ) -> Result<FinalOutput, VindexError> {
     traverse_inputs_with_taps(
-        plan, ops, tokens, None, backend, resume, sink, kv, mutation, taps,
+        plan, ops, tokens, None, backend, resume, sink, kv, mutation, taps, true,
     )
 }
 
@@ -63,6 +63,7 @@ pub(super) fn traverse_inputs_with_taps<B: PlanBackend + ?Sized, K: KvState + ?S
     mut kv: Option<&mut K>,
     mutation: Mutation,
     mut taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
+    compute_logits: bool,
 ) -> Result<FinalOutput, VindexError> {
     // A state a failed advance left unusable is refused by every traversal,
     // batch or block, before it is read or written.
@@ -371,7 +372,11 @@ pub(super) fn traverse_inputs_with_taps<B: PlanBackend + ?Sized, K: KvState + ?S
                 Some(norm) => norm.apply(backend, last),
                 None => last.clone(),
             };
-            let logits = ops.head_over_normed(backend, &final_hidden)?;
+            let logits = if compute_logits {
+                ops.head_over_normed(backend, &final_hidden)?
+            } else {
+                None
+            };
             (FinalState::Hidden(final_hidden), logits)
         }
         // The attention-residual exit: the same reduction a site runs,

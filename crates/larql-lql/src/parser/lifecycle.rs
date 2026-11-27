@@ -190,6 +190,17 @@ impl Parser {
                 top_channels: b.top_channels,
             });
         }
+        if matches!(self.peek(), crate::lexer::Token::Ident(ref s) if s.eq_ignore_ascii_case("LOGIT"))
+        {
+            self.advance();
+            self.expect_keyword(Keyword::Diff)?;
+            let (prompt, target_a, target_b) = self.parse_logit_diff_body("DIFF")?;
+            return Ok(Statement::DiffLogitDiff {
+                prompt,
+                target_a,
+                target_b,
+            });
+        }
         let a = self.parse_vindex_ref()?;
         let b = self.parse_vindex_ref()?;
 

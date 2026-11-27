@@ -321,6 +321,31 @@ impl PreparedOperands {
         }
     }
 
+    /// Evaluate the output head on ONLY `token_ids` (e.g. 2 rows for `LOGIT DIFF` instead of
+    /// all 128K vocabulary rows), through the exact same `backend.output_head` kernel,
+    /// `multiplier`, and `softcapping` as [`Self::head_over_normed`].
+    pub fn head_over_normed_for_tokens<B: PlanBackend + ?Sized>(
+        &self,
+        backend: &B,
+        final_hidden: &[f32],
+        token_ids: &[u32],
+    ) -> Result<Option<Vec<f32>>, VindexError> {
+        match self.output() {
+            Some((output, _)) => {
+                let selected = self.select_output_head(token_ids)?;
+                Ok(Some(backend.output_head(
+                    selected.projection.slice(),
+                    token_ids.len(),
+                    self.hidden(),
+                    final_hidden,
+                    output.multiplier,
+                    output.softcapping,
+                )?))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// V3-HEAD-OBS-1, property A4: one query head's share of the output
     /// projection, `W_o[:, h·d..(h+1)·d] · x`, computed by the SAME
     /// projection kernel and the same pinned realisation the executor's

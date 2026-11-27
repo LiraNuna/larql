@@ -74,6 +74,7 @@ topic_enum! {
         Trace,
         Capture,
         Dla,
+        LogitDiff,
         // Edit weights
         UpdateWeights,
         RemoveDirection,

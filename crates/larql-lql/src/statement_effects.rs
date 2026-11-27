@@ -75,6 +75,8 @@ impl Statement {
             | Statement::RemovePatch { .. }
             | Statement::Dla { .. }
             | Statement::DiffDla { .. }
+            | Statement::LogitDiff { .. }
+            | Statement::DiffLogitDiff { .. }
             | Statement::Overlay { .. }
             | Statement::LoadSoftPrompt { .. }
             | Statement::ClearSoftPrompt

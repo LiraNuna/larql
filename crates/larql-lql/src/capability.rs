@@ -152,6 +152,8 @@ fn public_explorer_check(stmt: &Statement) -> Result<(), LqlError> {
         | Trace { .. }
         | Dla { .. }
         | DiffDla { .. }
+        | LogitDiff { .. }
+        | DiffLogitDiff { .. }
         | Overlay { .. }
         | LoadSoftPrompt { .. }
         | ClearSoftPrompt

@@ -148,6 +148,21 @@ pub fn run_prompts_jsonl(
 
 fn exec_probe(session: &Session, op: &str, rec: &ProbeRecord) -> Result<Value, String> {
     match op {
+        "logit_diff" | "diff_logit_diff" => {
+            let ta = parse_target(rec.for_target.as_ref(), "for")?;
+            let tb = parse_target(rec.vs_target.as_ref(), "vs")?;
+            if op == "diff_logit_diff" {
+                let report = session
+                    .diff_logit_diff(&rec.prompt, ta, tb)
+                    .map_err(|e| e.to_string())?;
+                serde_json::to_value(&report).map_err(|e| e.to_string())
+            } else {
+                let report = session
+                    .logit_diff(&rec.prompt, ta, tb)
+                    .map_err(|e| e.to_string())?;
+                serde_json::to_value(&report).map_err(|e| e.to_string())
+            }
+        }
         "dla" | "diff_dla" => {
             let ta = parse_target(rec.for_target.as_ref(), "for")?;
             let tb = parse_target(rec.vs_target.as_ref(), "vs")?;

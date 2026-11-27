@@ -56,10 +56,10 @@ pub mod operations {
     };
     pub use super::vindex3::{
         npy_file_bytes, operand_bits_from_values, operand_origin, CaptureGeometry, CaptureSpec,
-        Captured, DiscardedWeightEdits, DlaChannelDelta, DlaChannelRow, DlaColumnDelta,
-        DlaColumnRow, DlaDiffReport, DlaHeadDelta, DlaHeadRow, DlaLayerDelta, DlaLayerRow,
-        DlaReport, EditedElement, Generated, NpyDescr, OperandValues, Prediction, Predictions,
-        SoftPromptSummary, StagedLowRank, StagedWeightDelta, WeightRead,
+        Captured, DiffLogitDiffReport, DiscardedWeightEdits, DlaChannelDelta, DlaChannelRow,
+        DlaColumnDelta, DlaColumnRow, DlaDiffReport, DlaHeadDelta, DlaHeadRow, DlaLayerDelta,
+        DlaLayerRow, DlaReport, EditedElement, Generated, LogitDiffReport, NpyDescr, OperandValues,
+        Prediction, Predictions, SoftPromptSummary, StagedLowRank, StagedWeightDelta, WeightRead,
     };
     pub use crate::ast::{
         CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite, DlaTarget,
@@ -709,6 +709,16 @@ impl Session {
                 *top_heads,
                 *top_channels,
             ),
+            Statement::LogitDiff {
+                prompt,
+                target_a,
+                target_b,
+            } => self.exec_logit_diff(prompt, target_a, target_b),
+            Statement::DiffLogitDiff {
+                prompt,
+                target_a,
+                target_b,
+            } => self.exec_diff_logit_diff(prompt, target_a, target_b),
             Statement::Overlay { kind } => self.exec_overlay(kind),
             Statement::LoadSoftPrompt { path } => self.exec_load_soft_prompt(path),
             Statement::ClearSoftPrompt => self.exec_clear_soft_prompt(),
