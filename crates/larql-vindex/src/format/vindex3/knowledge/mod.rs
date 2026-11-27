@@ -43,6 +43,7 @@
 //! conformance fixtures this rung gates on; lazy/memoised annotation
 //! for large containers is deliberately later, perf-shaped work.
 
+pub mod external_overlay;
 pub mod install_snapshot;
 mod journal;
 pub mod live_weights;
@@ -54,6 +55,9 @@ mod top_token_search;
 #[cfg(test)]
 mod tests;
 
+pub use external_overlay::{
+    load_lora_overlay, load_safetensors_overlay, ExternalOverlaySummary, ExternalWeightOverlay,
+};
 pub use live_weights::{ExecutionBinding, LiveTensor, LiveWeightRefusal, LiveWeightView};
 pub use overlay::KnowledgeOverlay;
 pub use postings::{FeatureAddress, PostingIndex, PostingLookup};

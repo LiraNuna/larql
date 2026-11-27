@@ -29,6 +29,7 @@ mod live;
 mod low_rank;
 mod npy;
 mod npy_output;
+mod overlay;
 mod overrides;
 mod prefix_cache;
 mod session;

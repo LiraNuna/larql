@@ -691,6 +691,7 @@ impl Session {
                 *top_heads,
                 *top_channels,
             ),
+            Statement::Overlay { kind } => self.exec_overlay(kind),
         }
     }
 

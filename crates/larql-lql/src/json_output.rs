@@ -203,6 +203,14 @@ fn execute_json_statement(
                     "data": report,
                 }));
             }
+            Statement::Overlay { kind } => {
+                let summary = session.apply_external_overlay(kind)?;
+                return Ok(json!({
+                    "ok": true,
+                    "statement": "OVERLAY",
+                    "data": summary,
+                }));
+            }
             _ => {}
         }
     }

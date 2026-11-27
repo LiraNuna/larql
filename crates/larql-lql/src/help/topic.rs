@@ -46,6 +46,7 @@ topic_enum! {
     StatementTopic {
         // Bind
         Use,
+        Overlay,
         Extract,
         // Inspect
         Stats,

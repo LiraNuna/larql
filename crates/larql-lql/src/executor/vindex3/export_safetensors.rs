@@ -48,7 +48,9 @@ impl Session {
             )));
         }
 
-        let live_map: Option<LiveTensorOverrides> = if overlay.has_weight_ops() {
+        let live_map: Option<LiveTensorOverrides> = if overlay.has_weight_ops()
+            || overlay.external_overlay().is_some()
+        {
             let mut map: LiveTensorOverrides = BTreeMap::new();
             match overlay.live_weights() {
                 Ok(Some(view)) => {

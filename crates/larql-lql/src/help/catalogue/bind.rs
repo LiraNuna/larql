@@ -50,6 +50,46 @@ pub(super) static USE: StatementHelp = StatementHelp {
     related: &["STATS", "SHOW MODELS", "EXTRACT", "BATCH"],
 };
 
+pub(super) static OVERLAY: StatementHelp = StatementHelp {
+    name: "OVERLAY",
+    aliases: &["OVERLAY SAFETENSORS", "OVERLAY LORA", "OVERLAY CLEAR"],
+    group: HelpGroup::Bind,
+    syntax: &[
+        "OVERLAY SAFETENSORS \"<ckpt_dir_or_file>\";",
+        "OVERLAY LORA \"<adapter_dir>\" [SCALE <number>];",
+        "OVERLAY CLEAR;",
+    ],
+    does: &[
+        "Mounts modified BF16 weights from a Hugging Face safetensors checkpoint/delta file or a",
+        "PEFT LoRA adapter directly in RAM over the bound read-only VINDEX3 container, avoiding a",
+        "full multi-GB container rebuild.",
+        "OVERLAY SAFETENSORS scans the candidate safetensors and installs replacements ONLY for",
+        "tensors whose BF16 bytes differ from the bound container; untouched layers stay hot in",
+        "the session's PreparedCache.",
+        "OVERLAY LORA reads adapter_config.json and adapter_model.safetensors, merges",
+        "scale * (alpha / r) * (B @ A) onto the bound container's BF16 matrices in parallel, and",
+        "mounts only the modified matrices.",
+        "OVERLAY CLEAR drops the mounted overlay and restores the bound base container in 0ms.",
+    ],
+    examples: &[
+        "OVERLAY SAFETENSORS \"candidate_ckpt\";",
+        "OVERLAY LORA \"lora_adapter\" SCALE 0.5;",
+        "OVERLAY CLEAR;",
+    ],
+    needs: &[Need::Vindex3],
+    effect: &[
+        "In-memory only: nothing on disk is modified. INFER, GENERATE, CAPTURE, DLA, TRACE, and",
+        "EXPORT SAFETENSORS immediately execute the overlaid weights.",
+    ],
+    operands: &[],
+    refusals: &[
+        "The session is not bound to a canonical VINDEX3 container.",
+        "The safetensors path or adapter directory does not exist or has mismatched tensor shapes.",
+        "The PUBLIC_EXPLORER profile refuses OVERLAY.",
+    ],
+    related: &["USE", "DLA", "EXPORT SAFETENSORS", "DISCARD WEIGHT EDITS"],
+};
+
 pub(super) static EXTRACT: StatementHelp = StatementHelp {
     name: "EXTRACT",
     aliases: &["EXTRACT MODEL"],

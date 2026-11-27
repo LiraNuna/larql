@@ -150,7 +150,8 @@ fn public_explorer_check(stmt: &Statement) -> Result<(), LqlError> {
         | ShowPatches
         | RemovePatch { .. }
         | Trace { .. }
-        | Dla { .. } => Err(LqlError::Refused {
+        | Dla { .. }
+        | Overlay { .. } => Err(LqlError::Refused {
             profile: CapabilityProfile::PublicExplorer.name().into(),
             statement: stmt.verb().into(),
             served: PUBLIC_EXPLORER_SERVES.into(),

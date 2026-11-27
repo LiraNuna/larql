@@ -74,6 +74,7 @@ impl Statement {
             | Statement::ShowPatches
             | Statement::RemovePatch { .. }
             | Statement::Dla { .. }
+            | Statement::Overlay { .. }
             | Statement::Help { .. } => false,
         }
     }

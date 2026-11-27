@@ -362,6 +362,13 @@ pub enum Statement {
         top_channels: Option<u32>,
     },
 
+    /// `OVERLAY SAFETENSORS "<path>" | OVERLAY LORA "<adapter_dir>" [SCALE <f>] | OVERLAY CLEAR`
+    /// (VINDEX3): mount a delta/full HF safetensors checkpoint or PEFT LoRA adapter in memory
+    /// over the bound read-only VINDEX3 container (skipping byte-identical tensors), or clear it.
+    Overlay {
+        kind: OverlayKind,
+    },
+
     // ── Help ──
     /// `HELP;` prints every statement's syntax; `HELP <topic>;` prints one page of the help catalogue
     /// (`crate::help`). `topic` is the words after `HELP`, as written. Read-only, and it needs no backend.
@@ -428,6 +435,7 @@ impl Statement {
             Statement::RemovePatch { .. } => "REMOVE PATCH",
             Statement::Trace { .. } => "TRACE",
             Statement::Dla { .. } => "DLA",
+            Statement::Overlay { .. } => "OVERLAY",
             Statement::Help { .. } => "HELP",
             Statement::Pipe { .. } => "|> (pipe)",
         }
@@ -493,6 +501,14 @@ pub enum LayerBand {
     Output,
     /// All layers: syntax + knowledge + output
     All,
+}
+
+/// Target specification for `OVERLAY`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverlayKind {
+    Safetensors { path: String },
+    Lora { path: String, scale: Option<f64> },
+    Clear,
 }
 
 /// Target token specification for `DLA`: either a single-token text literal or an explicit vocabulary ID.

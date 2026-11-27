@@ -20,6 +20,7 @@ use super::topic::{ConceptTopic, HelpGroup, StatementTopic};
 pub fn statement(topic: StatementTopic) -> &'static StatementHelp {
     match topic {
         StatementTopic::Use => &bind::USE,
+        StatementTopic::Overlay => &bind::OVERLAY,
         StatementTopic::Extract => &bind::EXTRACT,
         StatementTopic::Stats => &inspect::STATS,
         StatementTopic::ShowComponents => &inspect::SHOW_COMPONENTS,

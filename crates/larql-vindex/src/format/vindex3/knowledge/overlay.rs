@@ -81,6 +81,8 @@ pub struct KnowledgeOverlay {
     /// What execution runs for the stored-weight ops in effect — see [`super::live_weights`]. Stale whenever
     /// the op set may have changed since it was built.
     pub(super) live: super::live_weights::LiveWeightState,
+    /// Optional read-only delta safetensors or PEFT LoRA overlay mounted in memory over the base container.
+    pub(super) external: Option<super::external_overlay::ExternalWeightOverlay>,
 }
 
 impl KnowledgeOverlay {

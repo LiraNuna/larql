@@ -141,6 +141,10 @@ pub struct LiveWeightView {
 pub(super) type OpSetIdentity = Vec<String>;
 
 impl LiveWeightView {
+    pub(super) fn from_parts(tensors: Vec<LiveTensor>, overrides: OperandOverrides) -> Self {
+        Self { tensors, overrides }
+    }
+
     /// Every patched tensor, in the order each was first edited.
     pub fn tensors(&self) -> &[LiveTensor] {
         &self.tensors
@@ -176,7 +180,7 @@ impl KnowledgeOverlay {
             let built_for = self.weight_op_identity();
             let ops: Vec<WeightOpRef<'_>> =
                 self.weight_ops().into_iter().map(|(_, op)| op).collect();
-            match build_view(&ops, binding) {
+            match build_view(&ops, binding, self.external.as_ref()) {
                 Ok(view) => LiveWeightState::Ready { built_for, view },
                 Err(refusal) => LiveWeightState::Refused { built_for, refusal },
             }
@@ -186,10 +190,16 @@ impl KnowledgeOverlay {
         self.live_weights()
     }
 
-    /// The live view execution would run over: `None` with no stored-weight op in effect, the view when every
-    /// op is materialised, and otherwise the reason nothing may execute.
+    /// The live view execution would run over: `None` with no stored-weight op or external overlay in
+    /// effect, the view when every op/overlay is materialised, and otherwise the reason nothing may execute.
     pub fn live_weights(&self) -> Result<Option<&LiveWeightView>, LiveWeightRefusal> {
         if !self.has_weight_ops() {
+            if let Some(ext) = &self.external {
+                if self.has_knowledge_state() {
+                    return Err(LiveWeightRefusal::KnowledgePending);
+                }
+                return Ok(Some(&ext.view));
+            }
             return Ok(None);
         }
         if self.has_knowledge_state() {
@@ -234,10 +244,12 @@ impl KnowledgeOverlay {
     }
 }
 
-/// Materialise `ops` for `binding`, refusing whatever execution could not honour exactly.
+/// Materialise `ops` for `binding` (composing over any mounted external safetensors/LoRA overlay),
+/// refusing whatever execution could not honour exactly.
 fn build_view(
     ops: &[WeightOpRef<'_>],
     binding: &ExecutionBinding<'_>,
+    external: Option<&super::external_overlay::ExternalWeightOverlay>,
 ) -> Result<LiveWeightView, LiveWeightRefusal> {
     let requested = binding.store.representation_source();
     if requested == RepresentationSource::Transient {
@@ -263,8 +275,13 @@ fn build_view(
     let materialised =
         materialise_declared_patches(binding.container, &patches).map_err(compile)?;
 
-    let mut tensors = Vec::with_capacity(materialised.len());
-    let mut overrides = OperandOverrides::new();
+    let (mut tensors, mut overrides) = match external {
+        Some(ext) => (ext.view.tensors.clone(), ext.view.overrides.clone()),
+        None => (
+            Vec::with_capacity(materialised.len()),
+            OperandOverrides::new(),
+        ),
+    };
     for tensor in materialised {
         if let Some(selected) = binding
             .store
@@ -293,13 +310,21 @@ fn build_view(
                 });
             }
         }
-        tensors.push(LiveTensor {
-            object: tensor.object,
-            tensor: tensor.tensor,
-            shape: tensor.shape,
-            sha256,
-            bytes,
-        });
+        if let Some(existing) = tensors
+            .iter_mut()
+            .find(|t| t.object == tensor.object && t.tensor == tensor.tensor)
+        {
+            existing.sha256 = sha256;
+            existing.bytes = bytes;
+        } else {
+            tensors.push(LiveTensor {
+                object: tensor.object,
+                tensor: tensor.tensor,
+                shape: tensor.shape,
+                sha256,
+                bytes,
+            });
+        }
     }
     Ok(LiveWeightView { tensors, overrides })
 }

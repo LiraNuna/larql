@@ -19,6 +19,7 @@ impl Statement {
             Statement::Compile { .. } => StatementTopic::Compile,
             Statement::Diff { .. } => StatementTopic::Diff,
             Statement::Use { .. } => StatementTopic::Use,
+            Statement::Overlay { .. } => StatementTopic::Overlay,
             Statement::Walk { .. } => StatementTopic::Walk,
             Statement::Infer { .. } => StatementTopic::Infer,
             Statement::Select { .. } => StatementTopic::Select,
