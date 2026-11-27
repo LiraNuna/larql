@@ -3,15 +3,16 @@
 //! Computes the unembedding logit difference direction `u_res = final_norm_weight * (W_out[tokA] - W_out[tokB])`,
 //! folds each targeted sublayer's sandwich `post_ffn_norm` / `post_attention_norm` weight
 //! (`u_y = gamma_post * u_res`, automatically preserving zero-gamma RMS ballast dims with zero blowup!),
-//! normalizes `u_hat = u_y / ||u_y||_2`, and stages exact BF16 `RemoveDirection` ops
-//! (`W <- W - scale * u_hat * (u_hat^T W)`) that compose directly over `OVERLAY SAFETENSORS` /
-//! `OVERLAY LORA` and export cleanly via `EXPORT SAFETENSORS`.
+//! normalizes `u_hat = u_y / ||u_y||_2`, and stages an exact rank-1 `LowRankColumnsOp`
+//! (`W <- W + (-scale * u_hat) * (u_hat^T W_eff)`) recorded as a `weight-patches/v4` operation target
+//! (no `MAX_PATCH_ELEMENTS` cap!) that composes directly over `OVERLAY SAFETENSORS` /
+//! `OVERLAY LORA` and exports cleanly via `EXPORT SAFETENSORS`.
 
 use larql_models::config::NormType;
 use larql_vindex::format::vindex3::opplan::exec::operands::OperandSource;
-use larql_vindex::format::vindex3::opplan::{LayerAttention, LayerFfn, NormOp};
-use larql_vindex::format::vindex3::weight_patch::structured::{OperandBits, ScalarBits};
-use larql_vindex::format::vindex3::weight_patch::StructuredWeightOp;
+use larql_vindex::format::vindex3::opplan::{LayerAttention, LayerFfn, NormOp, OperandRef};
+use larql_vindex::format::vindex3::weight_patch::structured::OperandBits;
+use larql_vindex::format::vindex3::weight_patch::LowRankColumnsOp;
 use serde::Serialize;
 
 use super::dla_math::{load_two_rows, resolve_dla_layers, resolve_dla_target};
@@ -55,12 +56,13 @@ impl Session {
             )));
         }
 
-        // Gather all plan geometry, unembedding direction, and per-tensor folded unit directions
+        // Gather all plan geometry, unembedding direction, and per-tensor rank-1 factors
         // under an immutable borrow before staging ops on `self.backend`.
         struct PlannedProjection {
             tensor: String,
             cols: usize,
-            u_bits: Vec<u64>,
+            a_bits: Vec<u64>,
+            b_bits: Vec<u64>,
         }
 
         let (path, label_a, id_a, label_b, id_b, planned) = {
@@ -145,60 +147,53 @@ impl Session {
             let want_conv = matches!(target, ProjectOutTarget::ConvOut | ProjectOutTarget::All);
 
             let mut planned = Vec::new();
+            let mut plan_matrix = |operand: &OperandRef,
+                                   norm: Option<&NormOp>,
+                                   label: &str|
+             -> Result<(), LqlError> {
+                let u_y = match norm {
+                    Some(n) => fold_norm_direction(&source, n, &u_res)
+                        .map_err(|e| refused_project(format!("{label}: {e}")))?,
+                    None => u_res.clone(),
+                };
+                let u_hat = normalize_unit(&u_y)?;
+                let (a_bits, b_bits) = compute_rank1_factors(&source, operand, &u_hat, scale)?;
+                planned.push(PlannedProjection {
+                    tensor: operand.tensor.clone(),
+                    cols: operand.shape[1],
+                    a_bits,
+                    b_bits,
+                });
+                Ok(())
+            };
+
             for &l in &req_layers {
                 let layer_plan = &plan.layers[l];
                 if want_w2 {
                     if let Some(ffn) = layer_plan.ffn.as_ref().and_then(LayerFfn::dense) {
-                        let u_y = match &layer_plan.post_ffn_norm {
-                            Some(norm) => {
-                                fold_norm_direction(&source, norm, &u_res).map_err(|e| {
-                                    refused_project(format!("layer {l} post_ffn_norm: {e}"))
-                                })?
-                            }
-                            None => u_res.clone(),
-                        };
-                        let u_bits = normalize_to_f64_bits(&u_y)?;
-                        planned.push(PlannedProjection {
-                            tensor: ffn.down.tensor.clone(),
-                            cols: ffn.down.shape[1],
-                            u_bits,
-                        });
+                        plan_matrix(
+                            &ffn.down,
+                            layer_plan.post_ffn_norm.as_ref(),
+                            &format!("layer {l} post_ffn_norm"),
+                        )?;
                     }
                 }
                 if want_o {
                     if let Some(attn) = layer_plan.attention.softmax() {
-                        let u_y = match &layer_plan.post_attention_norm {
-                            Some(norm) => {
-                                fold_norm_direction(&source, norm, &u_res).map_err(|e| {
-                                    refused_project(format!("layer {l} post_attention_norm: {e}"))
-                                })?
-                            }
-                            None => u_res.clone(),
-                        };
-                        let u_bits = normalize_to_f64_bits(&u_y)?;
-                        planned.push(PlannedProjection {
-                            tensor: attn.o.tensor.clone(),
-                            cols: attn.o.shape[1],
-                            u_bits,
-                        });
+                        plan_matrix(
+                            &attn.o,
+                            layer_plan.post_attention_norm.as_ref(),
+                            &format!("layer {l} post_attention_norm"),
+                        )?;
                     }
                 }
                 if want_conv {
                     if let LayerAttention::ShortConv(sc) = &layer_plan.attention {
-                        let u_y = match &layer_plan.post_attention_norm {
-                            Some(norm) => {
-                                fold_norm_direction(&source, norm, &u_res).map_err(|e| {
-                                    refused_project(format!("layer {l} post_operator_norm: {e}"))
-                                })?
-                            }
-                            None => u_res.clone(),
-                        };
-                        let u_bits = normalize_to_f64_bits(&u_y)?;
-                        planned.push(PlannedProjection {
-                            tensor: sc.out_proj.tensor.clone(),
-                            cols: sc.out_proj.shape[1],
-                            u_bits,
-                        });
+                        plan_matrix(
+                            &sc.out_proj,
+                            layer_plan.post_attention_norm.as_ref(),
+                            &format!("layer {l} post_operator_norm"),
+                        )?;
                     }
                 }
             }
@@ -214,35 +209,35 @@ impl Session {
         let origin = format!("project_out:{label_a}[{id_a}]-{label_b}[{id_b}]");
         let mut ops_to_stage = Vec::with_capacity(planned.len());
         let mut total_changed_elements = 0usize;
-        for item in &planned {
-            let op = StructuredWeightOp::bind(
+        for item in planned {
+            let op = LowRankColumnsOp::bind(
                 &path,
                 &item.tensor,
                 NUMERICS,
-                &OperandBits::F64(item.u_bits.clone()),
-                ScalarBits::F64(scale.to_bits()),
+                1,
+                &OperandBits::F64(item.a_bits),
+                &OperandBits::F64(item.b_bits),
                 (0..item.cols).collect(),
             )
             .map_err(refused_project)?
             .with_origin(origin.clone());
-            let resolved = op.resolve(&path).map_err(refused_project)?;
-            total_changed_elements += resolved.edits.len();
-            ops_to_stage.push((item.tensor.clone(), op));
+            let resolved = op.resolve_tensor(&path).map_err(refused_project)?;
+            total_changed_elements += resolved.changed_elements;
+            ops_to_stage.push((item.tensor, op));
         }
 
-        // Check disjointness across all planned ops before staging any of them (atomic!).
         let Backend::Vindex3 { overlay, .. } = &mut self.backend else {
             unreachable!("matched above")
         };
         let mut projected_tensors = Vec::with_capacity(ops_to_stage.len());
         for (tensor, op) in ops_to_stage {
             overlay
-                .stage_structured_op(op.clone())
+                .stage_low_rank_columns_op(op.clone())
                 .map_err(refused_project)?;
             if let Some(recording) = &mut self.patch_recording {
                 recording
                     .operations
-                    .push(larql_vindex::PatchOp::StructuredWeight(op));
+                    .push(larql_vindex::PatchOp::LowRankColumnsWeight(op));
             }
             projected_tensors.push(tensor);
         }
@@ -320,12 +315,51 @@ fn fold_norm_direction(
     Ok(out)
 }
 
-fn normalize_to_f64_bits(u: &[f64]) -> Result<Vec<u64>, LqlError> {
+fn normalize_unit(u: &[f64]) -> Result<Vec<f64>, LqlError> {
     let norm = u.iter().map(|&v| v * v).sum::<f64>().sqrt();
     if !norm.is_finite() || norm < 1e-12 {
         return Err(refused_project(
             "folded projection direction has near-zero norm (cannot normalize)",
         ));
     }
-    Ok(u.iter().map(|&v| (v / norm).to_bits()).collect())
+    Ok(u.iter().map(|&v| v / norm).collect())
+}
+
+/// Compute exact rank-1 factors `(a, b)` such that `W + a * b^T = W - scale * u_hat * (u_hat^T W)`
+/// over the currently active effective weight matrix `W` (including any mounted external overlay).
+fn compute_rank1_factors(
+    source: &OperandSource<'_>,
+    operand: &OperandRef,
+    u_hat: &[f64],
+    scale: f64,
+) -> Result<(Vec<u64>, Vec<u64>), LqlError> {
+    if operand.shape.len() != 2 {
+        return Err(refused_project(format!(
+            "tensor `{}` has rank {}, expected 2D matrix",
+            operand.tensor,
+            operand.shape.len()
+        )));
+    }
+    let rows = operand.shape[0];
+    let cols = operand.shape[1];
+    if u_hat.len() != rows {
+        return Err(refused_project(format!(
+            "tensor `{}` has {rows} rows, expected {}",
+            operand.tensor,
+            u_hat.len()
+        )));
+    }
+    let w = source
+        .load(operand)
+        .map_err(|e| refused_project(format!("read `{}`: {e}", operand.tensor)))?;
+    let mut b = vec![0.0f64; cols];
+    for (r, &ur) in u_hat.iter().enumerate() {
+        let row = &w[r * cols..(r + 1) * cols];
+        for (c, &wrc) in row.iter().enumerate() {
+            b[c] += ur * (wrc as f64);
+        }
+    }
+    let a_bits: Vec<u64> = u_hat.iter().map(|&ur| (-scale * ur).to_bits()).collect();
+    let b_bits: Vec<u64> = b.iter().map(|&bc| bc.to_bits()).collect();
+    Ok((a_bits, b_bits))
 }

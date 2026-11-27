@@ -127,7 +127,7 @@ impl LowRankColumnsOp {
     }
 
     /// The op as the interpreter takes it, with its operands decoded.
-    pub(super) fn op_kind(&self) -> Result<OpKind, WeightPatchError> {
+    pub(crate) fn op_kind(&self) -> Result<OpKind, WeightPatchError> {
         let (a, b) = self.operands()?;
         Ok(OpKind::AddLowRankColumns {
             rank: self.rank,

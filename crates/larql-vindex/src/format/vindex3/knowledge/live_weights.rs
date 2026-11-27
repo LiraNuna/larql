@@ -284,22 +284,25 @@ fn build_view(
     };
     for mut tensor in materialised {
         // When an external safetensors/LoRA overlay already supplies modified BF16 bytes for this
-        // same tensor AND every staged op targeting it is a `StructuredWeightOp` (`PROJECT OUT`,
-        // `REMOVE [INPUT] DIRECTION`, or `PATCH HEAD / COLUMN / CHANNEL`), apply each op directly
-        // on top of the overlaid BF16 bytes so surgical edits compose cleanly with
-        // `OVERLAY SAFETENSORS` / `OVERLAY LORA` and `EXPORT SAFETENSORS`.
+        // same tensor AND every staged op targeting it is a structured/low-rank op (`PROJECT OUT`,
+        // `ADD LOW RANK`, `REMOVE [INPUT] DIRECTION`, or `PATCH HEAD / COLUMN / CHANNEL`), apply
+        // each op directly on top of the overlaid BF16 bytes so surgical edits compose cleanly
+        // with `OVERLAY SAFETENSORS` / `OVERLAY LORA` and `EXPORT SAFETENSORS`.
         if let Some(ext_tensor) = external.and_then(|ext| {
             ext.view
                 .tensors
                 .iter()
                 .find(|t| t.object == tensor.object && t.tensor == tensor.tensor)
         }) {
-            let matching_ops: Vec<&crate::format::vindex3::weight_patch::StructuredWeightOp> = ops
+            let matching_ops: Vec<WeightOpRef<'_>> = ops
                 .iter()
+                .copied()
                 .filter(|op| op.tensor() == tensor.tensor)
-                .filter_map(|op| match op {
-                    WeightOpRef::Structured(s) => Some(*s),
-                    _ => None,
+                .filter(|op| {
+                    matches!(
+                        op,
+                        WeightOpRef::Structured(_) | WeightOpRef::LowRankColumns(_)
+                    )
                 })
                 .collect();
             let total_matching = ops.iter().filter(|op| op.tensor() == tensor.tensor).count();
@@ -313,13 +316,23 @@ fn build_view(
                     .chunks_exact(2)
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
-                for s_op in matching_ops {
-                    let kind = s_op
-                        .op_kind()
-                        .map_err(|e| LiveWeightRefusal::Compile(e.to_string()))?;
+                for op in matching_ops {
+                    let (numerics, kind) = match op {
+                        WeightOpRef::Structured(s) => (
+                            s.numerics.clone(),
+                            s.op_kind()
+                                .map_err(|e| LiveWeightRefusal::Compile(e.to_string()))?,
+                        ),
+                        WeightOpRef::LowRankColumns(lr) => (
+                            lr.numerics.clone(),
+                            lr.op_kind()
+                                .map_err(|e| LiveWeightRefusal::Compile(e.to_string()))?,
+                        ),
+                        WeightOpRef::Delta(_) => unreachable!("filtered above"),
+                    };
                     let structured_op =
                         crate::format::vindex3::weight_patch::structured::StructuredOp {
-                            numerics: Some(s_op.numerics.clone()),
+                            numerics: Some(numerics),
                             shape: [rows, cols],
                             kind,
                             fixups: Vec::new(),
