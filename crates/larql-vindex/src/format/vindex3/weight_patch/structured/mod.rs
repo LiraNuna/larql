@@ -123,6 +123,12 @@ pub enum OpKind {
     ZeroColumns {
         columns: Vec<usize>,
     },
+    /// Column scaling (counterfactual ablation/amplification):
+    /// `W[:, c] <- RNE_bf16(alpha * W[:, c])` for each column `c` in `columns` (`alpha == 0.0` writes `0x0000`).
+    ScaleColumns {
+        alpha: ScalarBits,
+        columns: Vec<usize>,
+    },
 }
 
 /// One structured op, as declared. Nothing in it is trusted until [`run`] has checked it.

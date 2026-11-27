@@ -78,6 +78,7 @@ topic_enum! {
         UpdateWeights,
         RemoveDirection,
         AddLowRank,
+        PatchUnit,
         // Patches
         BeginPatch,
         SavePatch,

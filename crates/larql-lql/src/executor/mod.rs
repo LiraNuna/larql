@@ -712,6 +712,11 @@ impl Session {
             Statement::Overlay { kind } => self.exec_overlay(kind),
             Statement::LoadSoftPrompt { path } => self.exec_load_soft_prompt(path),
             Statement::ClearSoftPrompt => self.exec_clear_soft_prompt(),
+            Statement::PatchUnit {
+                target,
+                layer,
+                scale,
+            } => self.exec_patch_unit(target, *layer, *scale),
         }
     }
 

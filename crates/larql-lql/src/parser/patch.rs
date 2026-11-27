@@ -201,4 +201,81 @@ impl Parser {
             numerics,
         })
     }
+
+    /// `PATCH {HEAD <h> | HEADS (...) | COLUMN <c> | COLUMNS (...) | NEURON <c> | NEURONS (...) | CHANNEL <c> | CHANNELS (...)} AT LAYER <l> SCALE <s>;`
+    pub(crate) fn parse_patch_unit(&mut self) -> Result<Statement, ParseError> {
+        self.expect_keyword(Keyword::Patch)?;
+        let target = match self.peek() {
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("HEAD") => {
+                self.advance();
+                PatchUnitTarget::Heads(vec![self.expect_u32()? as usize])
+            }
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("HEADS") => {
+                self.advance();
+                PatchUnitTarget::Heads(self.parse_column_list()?)
+            }
+            Token::Ident(ref s)
+                if s.eq_ignore_ascii_case("COLUMN") || s.eq_ignore_ascii_case("NEURON") =>
+            {
+                self.advance();
+                PatchUnitTarget::Columns(vec![self.expect_u32()? as usize])
+            }
+            Token::Ident(ref s)
+                if s.eq_ignore_ascii_case("COLUMNS") || s.eq_ignore_ascii_case("NEURONS") =>
+            {
+                self.advance();
+                PatchUnitTarget::Columns(self.parse_column_list()?)
+            }
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("CHANNEL") => {
+                self.advance();
+                PatchUnitTarget::Channels(vec![self.expect_u32()? as usize])
+            }
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("CHANNELS") => {
+                self.advance();
+                PatchUnitTarget::Channels(self.parse_column_list()?)
+            }
+            _ => {
+                return Err(self.expected_one_of(
+                    "PATCH",
+                    &["HEAD", "HEADS", "COLUMN", "NEURON", "CHANNEL"],
+                    "PATCH",
+                ));
+            }
+        };
+        self.expect_keyword(Keyword::At)?;
+        self.expect_keyword(Keyword::Layer)?;
+        let layer = self.expect_u32()? as usize;
+        self.expect_ident_eq("SCALE")?;
+        let negative = matches!(self.peek(), Token::Dash);
+        if negative {
+            self.advance();
+        }
+        let magnitude = match self.peek() {
+            Token::NumberLit(v) => {
+                self.advance();
+                v
+            }
+            Token::IntegerLit(v) => {
+                if v.unsigned_abs() > MAX_EXACT_INTEGER_SCALE {
+                    return Err(ParseError(format!(
+                        "SCALE {v} is not exactly representable as an f64"
+                    )));
+                }
+                self.advance();
+                v as f64
+            }
+            other => {
+                return Err(ParseError(format!(
+                    "expected a number for SCALE, got {other:?}"
+                )));
+            }
+        };
+        let scale = if negative { -magnitude } else { magnitude };
+        self.eat_semicolon();
+        Ok(Statement::PatchUnit {
+            target,
+            layer,
+            scale,
+        })
+    }
 }

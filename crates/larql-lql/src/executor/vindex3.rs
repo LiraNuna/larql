@@ -32,6 +32,7 @@ mod npy;
 mod npy_output;
 mod overlay;
 mod overrides;
+mod patch_unit;
 mod prefix_cache;
 mod session;
 mod soft_prompt;

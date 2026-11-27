@@ -88,6 +88,7 @@ impl Parser {
             Token::Keyword(Keyword::Save) => self.parse_save(),
             Token::Keyword(Keyword::Apply) => self.parse_apply(),
             Token::Keyword(Keyword::Remove) => self.parse_remove(),
+            Token::Keyword(Keyword::Patch) => self.parse_patch_unit(),
             Token::Keyword(Keyword::Trace) => self.parse_trace(),
             Token::Keyword(Keyword::Compact) => self.parse_compact(),
             // `ADD` is a word in this position, not a reserved keyword.

@@ -391,6 +391,16 @@ pub enum Statement {
     /// `CLEAR SOFT_PROMPT;` (VINDEX3): remove any active soft-prompt prefix in 0ms.
     ClearSoftPrompt,
 
+    /// `PATCH {HEAD <h> | HEADS (...) | COLUMN <c> | COLUMNS (...) | NEURON <c> | NEURONS (...) | CHANNEL <c> | CHANNELS (...)} AT LAYER <l> SCALE <s>;`
+    /// Stage a counterfactual column-scaling/ablation op on `o_proj` (heads), `w2`/`down_proj`
+    /// (neurons/columns), or `conv.out_proj` (ShortConv channels) with exact BF16 rounding and
+    /// 0ms rollback via `DISCARD WEIGHT EDITS;`.
+    PatchUnit {
+        target: PatchUnitTarget,
+        layer: usize,
+        scale: f64,
+    },
+
     // ── Help ──
     /// `HELP;` prints every statement's syntax; `HELP <topic>;` prints one page of the help catalogue
     /// (`crate::help`). `topic` is the words after `HELP`, as written. Read-only, and it needs no backend.
@@ -460,6 +470,7 @@ impl Statement {
             Statement::Overlay { .. } => "OVERLAY",
             Statement::LoadSoftPrompt { .. } => "LOAD SOFT_PROMPT",
             Statement::ClearSoftPrompt => "CLEAR SOFT_PROMPT",
+            Statement::PatchUnit { .. } => "PATCH",
             Statement::Help { .. } => "HELP",
             Statement::Pipe { .. } => "|> (pipe)",
         }
@@ -525,6 +536,14 @@ pub enum LayerBand {
     Output,
     /// All layers: syntax + knowledge + output
     All,
+}
+
+/// Target unit specification for counterfactual `PATCH ... AT LAYER <l> SCALE <s>;`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchUnitTarget {
+    Heads(Vec<usize>),
+    Columns(Vec<usize>),
+    Channels(Vec<usize>),
 }
 
 /// Target specification for `OVERLAY`.

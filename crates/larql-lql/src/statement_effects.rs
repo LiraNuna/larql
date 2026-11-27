@@ -78,6 +78,7 @@ impl Statement {
             | Statement::Overlay { .. }
             | Statement::LoadSoftPrompt { .. }
             | Statement::ClearSoftPrompt
+            | Statement::PatchUnit { .. }
             | Statement::Help { .. } => false,
         }
     }

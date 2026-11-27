@@ -282,7 +282,66 @@ fn build_view(
             OperandOverrides::new(),
         ),
     };
-    for tensor in materialised {
+    for mut tensor in materialised {
+        // When an external safetensors/LoRA overlay already supplies modified BF16 bytes for this
+        // same tensor AND every staged op targeting it is a column-scaling op (`PATCH HEAD /
+        // COLUMN / CHANNEL ... SCALE <s>`), apply the scaling directly on top of the overlaid
+        // bytes so counterfactual ablations compose cleanly over `OVERLAY SAFETENSORS / LORA`.
+        if let Some(ext_tensor) = external.and_then(|ext| {
+            ext.view
+                .tensors
+                .iter()
+                .find(|t| t.object == tensor.object && t.tensor == tensor.tensor)
+        }) {
+            let matching_ops: Vec<&crate::format::vindex3::weight_patch::StructuredWeightOp> = ops
+                .iter()
+                .filter(|op| op.tensor() == tensor.tensor)
+                .filter_map(|op| match op {
+                    WeightOpRef::Structured(s) if s.scale_columns_only => Some(*s),
+                    _ => None,
+                })
+                .collect();
+            let total_matching = ops.iter().filter(|op| op.tensor() == tensor.tensor).count();
+            if !matching_ops.is_empty()
+                && matching_ops.len() == total_matching
+                && tensor.shape.len() == 2
+            {
+                let [rows, cols] = [tensor.shape[0], tensor.shape[1]];
+                let mut cur_bits: Vec<u16> = ext_tensor
+                    .bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .collect();
+                for s_op in matching_ops {
+                    let scale_bits = u64::from_str_radix(&s_op.alpha, 16)
+                        .map_err(|e| LiveWeightRefusal::Compile(e.to_string()))?;
+                    let structured_op =
+                        crate::format::vindex3::weight_patch::structured::StructuredOp {
+                            numerics: Some(s_op.numerics.clone()),
+                            shape: [rows, cols],
+                            kind: crate::format::vindex3::weight_patch::structured::OpKind::ScaleColumns {
+                                alpha: crate::format::vindex3::weight_patch::structured::ScalarBits::F64(scale_bits),
+                                columns: s_op.columns.clone(),
+                            },
+                            fixups: Vec::new(),
+                        };
+                    cur_bits = crate::format::vindex3::weight_patch::structured::run(
+                        &structured_op,
+                        &crate::format::vindex3::weight_patch::structured::BaseTensor {
+                            shape: [rows, cols],
+                            bits: &cur_bits,
+                            role: crate::format::vindex3::weight_patch::structured::TensorRole::Ordinary,
+                        },
+                    )
+                    .map_err(|e| LiveWeightRefusal::Compile(e.to_string()))?;
+                }
+                let mut new_bytes = Vec::with_capacity(cur_bits.len() * 2);
+                for b in cur_bits {
+                    new_bytes.extend_from_slice(&b.to_le_bytes());
+                }
+                tensor.bytes = new_bytes;
+            }
+        }
         if let Some(selected) = binding
             .store
             .selection()

@@ -146,6 +146,13 @@ impl StructuredOpRecord {
                 ),
             ],
             OpKind::AddLowRankColumns { a, b, .. } => vec![("a", a), ("b", b)],
+            OpKind::ScaleColumns { alpha, .. } => vec![(
+                "alpha",
+                match alpha {
+                    ScalarBits::F64(b) => OperandBits::F64(vec![b]),
+                    ScalarBits::F32(b) => OperandBits::F32(vec![b]),
+                },
+            )],
             OpKind::AddLowRank { .. } | OpKind::ZeroColumns { .. } => {
                 unreachable!("no .vlp op declares this kind")
             }
@@ -212,6 +219,7 @@ impl StructuredOpRecord {
         match self {
             // `a` is rows × K, so `len(a) × |J|` is rows × |J| × K.
             Self::LowRankColumns(o) => (o.a.len() as u64).saturating_mul(o.columns.len() as u64),
+            Self::RemoveDirection(o) if o.scale_columns_only => o.columns.len() as u64,
             Self::RemoveDirection(o) => (o.operand.len() as u64)
                 .saturating_mul(o.columns.len() as u64)
                 .saturating_mul(REMOVAL_WORK_PER_ELEMENT),

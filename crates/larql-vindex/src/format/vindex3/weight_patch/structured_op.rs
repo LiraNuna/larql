@@ -62,6 +62,10 @@ pub struct StructuredWeightOp {
     /// `.vlp` files and digests are bit-for-bit unchanged.
     #[serde(default, skip_serializing_if = "is_false")]
     pub input_axis: bool,
+    /// When `true`, scales columns listed in `columns` directly by `alpha` (`W[:, c] <- alpha * W[:, c]`,
+    /// with `operand` empty). Used by counterfactual `PATCH HEAD / COLUMN / CHANNEL ... SCALE <s>`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub scale_columns_only: bool,
     /// Where the operand came from, if its writer says: a feature artifact id, a file hash, a note. The
     /// operand's bits are what the op computes with; this only makes its provenance separately identifiable
     /// rather than lost inside the op. It is covered by the digest and read by nothing else.
@@ -97,6 +101,35 @@ impl StructuredWeightOp {
         Self::bind_axis(container, tensor, numerics, operand, alpha, rows, true)
     }
 
+    /// Build a column-scaling op (`W[:, c] <- alpha * W[:, c]`) bound to `container` and seal it.
+    pub fn bind_scale_columns(
+        container: &Path,
+        tensor: &str,
+        numerics: &str,
+        alpha: ScalarBits,
+        columns: Vec<usize>,
+    ) -> Result<Self, WeightPatchError> {
+        let source = bind_source(container, tensor)?;
+        let alpha = match alpha {
+            ScalarBits::F64(b) => format!("{b:016x}"),
+            ScalarBits::F32(b) => format!("{b:08x}"),
+        };
+        let mut op = Self {
+            source,
+            tensor: super::TensorName::parse(tensor).tensor.to_string(),
+            numerics: numerics.to_string(),
+            operand: Vec::new(),
+            alpha,
+            columns,
+            input_axis: false,
+            scale_columns_only: true,
+            origin: None,
+            digest: String::new(),
+        };
+        op.digest = op.compute_digest();
+        Ok(op)
+    }
+
     fn bind_axis(
         container: &Path,
         tensor: &str,
@@ -125,6 +158,7 @@ impl StructuredWeightOp {
             alpha,
             columns: indices,
             input_axis,
+            scale_columns_only: false,
             origin: None,
             digest: String::new(),
         };
@@ -143,8 +177,13 @@ impl StructuredWeightOp {
     pub fn compute_digest(&self) -> String {
         let columns: Vec<String> = self.columns.iter().map(|c| c.to_string()).collect();
         let axis_line = if self.input_axis { "axis=input\n" } else { "" };
+        let mode_line = if self.scale_columns_only {
+            "mode=scale_columns\n"
+        } else {
+            ""
+        };
         let text = format!(
-            "{DIGEST_DOMAIN}\n{axis_line}model={}\nindex_sha256={}\nrepresentation={}\npayload_sha256={}\n\
+            "{DIGEST_DOMAIN}\n{axis_line}{mode_line}model={}\nindex_sha256={}\nrepresentation={}\npayload_sha256={}\n\
              tensor={}\nnumerics={}\nalpha={}\ncolumns={}\noperand={}\norigin={}\n",
             self.source.model,
             self.source.index_sha256,
@@ -182,7 +221,17 @@ impl StructuredWeightOp {
     /// The op as the interpreter takes it, with its operands decoded.
     pub(super) fn op_kind(&self) -> Result<OpKind, WeightPatchError> {
         let (operand, alpha) = self.operands()?;
-        if self.input_axis {
+        if self.scale_columns_only {
+            if !self.operand.is_empty() {
+                return Err(WeightPatchError::PatchOp(
+                    "scale_columns op must not carry a vector operand".to_string(),
+                ));
+            }
+            Ok(OpKind::ScaleColumns {
+                alpha,
+                columns: self.columns.clone(),
+            })
+        } else if self.input_axis {
             Ok(OpKind::RemoveInputDirection {
                 v: operand,
                 alpha,

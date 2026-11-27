@@ -199,9 +199,50 @@ pub(super) static ADD_LOW_RANK: StatementHelp = StatementHelp {
     related: &[
         "REMOVE DIRECTION",
         "UPDATE WEIGHTS",
+        "PATCH",
         "DISCARD WEIGHT EDITS",
         "COMPILE",
         "VERIFY LEDGER",
+        "WEIGHTS",
+    ],
+};
+
+pub(super) static PATCH_UNIT: StatementHelp = StatementHelp {
+    name: "PATCH",
+    aliases: &["PATCH HEAD", "PATCH COLUMN", "PATCH NEURON", "PATCH CHANNEL"],
+    group: HelpGroup::Weights,
+    syntax: &[
+        "PATCH {HEAD <h> | HEADS (<h>, ...)} AT LAYER <l> SCALE <number>;",
+        "PATCH {COLUMN <c> | COLUMNS (<c>, ...) | NEURON <c> | NEURONS (<c>, ...)} AT LAYER <l> SCALE <number>;",
+        "PATCH {CHANNEL <c> | CHANNELS (<c>, ...)} AT LAYER <l> SCALE <number>;",
+    ],
+    does: &[
+        "Stages an exact BF16 counterfactual scaling/ablation op (W[:, c] <- RNE_bf16(scale * W[:, c]),",
+        "with SCALE 0.0 writing exact 0x0000 bits) on one layer's attention head(s) (o_proj), dense",
+        "FFN neuron(s)/column(s) (down projection), or ShortConv channel(s) (conv.out_proj).",
+        "Auto-resolves the target tensor and head_dim slice directly from the bound container's",
+        "executable plan, incrementally re-prepares only that single layer in PreparedCache, and",
+        "rolls back in 0ms via DISCARD WEIGHT EDITS;.",
+    ],
+    examples: &[
+        "PATCH HEAD 4 AT LAYER 22 SCALE 0.0;",
+        "PATCH NEURON 2886 AT LAYER 23 SCALE 0.5;",
+        "PATCH CHANNEL 1023 AT LAYER 23 SCALE 0.0;",
+    ],
+    needs: &[Need::Vindex3],
+    effect: STAGED_EFFECT,
+    operands: &[],
+    refusals: &[
+        "The session is not bound to a canonical VINDEX3 container.",
+        "The layer index is out of range or does not carry the requested operator (softmax / dense FFN / ShortConv).",
+        "A head, column, or channel index is out of range, duplicated, or already edited by another staged op.",
+        "SCALE is non-finite or changes no elements (e.g. SCALE 1.0).",
+    ],
+    related: &[
+        "DLA",
+        "DIFF",
+        "DISCARD WEIGHT EDITS",
+        "REMOVE DIRECTION",
         "WEIGHTS",
     ],
 };

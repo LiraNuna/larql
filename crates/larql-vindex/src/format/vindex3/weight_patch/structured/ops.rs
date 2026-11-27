@@ -64,6 +64,14 @@ fn interpret(
     let ar = Arith { mutation };
     match (&op.kind, profile) {
         (OpKind::ZeroColumns { columns }, _) => zero_columns(op, base, columns, mutation),
+        (OpKind::ScaleColumns { alpha, columns }, Some(p)) => {
+            check_columns_sorted(columns)?;
+            if p.works_in_f64() {
+                scale_columns::<f64>(op, base, p, ar, decode_scalar(*alpha, p)?, columns)
+            } else {
+                scale_columns::<f32>(op, base, p, ar, decode_scalar(*alpha, p)?, columns)
+            }
+        }
         (OpKind::RemoveDirection { u, alpha, columns }, Some(p)) => {
             check_columns_sorted(columns)?;
             if u.len() != rows {
@@ -383,6 +391,42 @@ fn zero_columns(
             };
         }
     }
+    Ok(out)
+}
+
+fn scale_columns<W: Work>(
+    op: &StructuredOp,
+    base: &BaseTensor<'_>,
+    p: Profile,
+    ar: Arith,
+    alpha: W,
+    columns: &[usize],
+) -> Result<Vec<u16>, Refusal> {
+    let rows = op.shape[0];
+    let cols = check_header(op, base, Some(columns), |_, c| {
+        columns.binary_search(&c).is_ok()
+    })?;
+    check_read_finite(
+        base,
+        columns
+            .iter()
+            .flat_map(|&j| (0..rows).map(move |r| r * cols + j)),
+    )?;
+    let chain = through_f32(p, ar.mutation);
+    let mut out = base.bits.to_vec();
+    let is_zero = alpha == W::zero();
+    for r in 0..rows {
+        let row = &mut out[r * cols..(r + 1) * cols];
+        for &j in columns {
+            row[j] = if is_zero {
+                BF16_POSITIVE_ZERO
+            } else {
+                let w = W::widen_bf16(row[j]);
+                ar.to_bf16(ar.mul(w, alpha)?, chain)?
+            };
+        }
+    }
+    apply_fixups(&mut out, &op.fixups, cols)?;
     Ok(out)
 }
 

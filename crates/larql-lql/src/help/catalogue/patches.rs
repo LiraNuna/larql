@@ -6,7 +6,7 @@ use crate::live_scope::executed_by;
 
 pub(super) static GROUP: GroupHelp = GroupHelp {
     name: "PATCHES",
-    aliases: &["PATCH", "VLP"],
+    aliases: &["VLP"],
     title: "Patches (.vlp files)",
     intro: &[
         "A patch is a JSON file of operations. It is the only way staged edits leave a process",
