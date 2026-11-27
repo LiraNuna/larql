@@ -20,13 +20,21 @@ pub(crate) struct PreparedCacheKey {
     patched_tensors: Vec<(String, String)>,
 }
 
+/// Cache key uniquely identifying a `PrefixStateCache` epoch: active weight digests plus any
+/// active continuous soft-prompt digest.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PrefixCacheKey {
+    pub weights: PreparedCacheKey,
+    pub soft_prompt_sha256: Option<String>,
+}
+
 pub(crate) struct CachedPrepared {
     key: PreparedCacheKey,
     operands: Arc<PreparedOperands>,
 }
 
-/// Session-resident cache of lowered `PreparedOperands` and shared-prefix continuation
-/// snapshots, shared across `INFER`, `GENERATE`, `CAPTURE`, and `DLA`.
+/// Session-resident cache of lowered `PreparedOperands`, active soft-prompt embeddings, and
+/// shared-prefix continuation snapshots, shared across `INFER`, `GENERATE`, `CAPTURE`, and `DLA`.
 ///
 /// Keeps the unpatched `base` image resident across live weight edits so staging or changing
 /// a patch reuses every untouched layer, the embedding table, and the output head via
@@ -35,6 +43,7 @@ pub(crate) struct CachedPrepared {
 pub(crate) struct PreparedCache {
     base: Mutex<Option<Arc<PreparedOperands>>>,
     patched: Mutex<Option<CachedPrepared>>,
+    soft_prompt: Mutex<Option<Arc<super::SoftPromptState>>>,
     prefix: super::prefix_cache::PrefixStateCache,
 }
 
@@ -46,6 +55,37 @@ impl PreparedCache {
             *guard = None;
         }
         self.prefix.clear();
+    }
+
+    pub(crate) fn set_soft_prompt(&self, state: super::SoftPromptState) {
+        if let Ok(mut guard) = self.soft_prompt.lock() {
+            *guard = Some(Arc::new(state));
+        }
+        self.prefix.clear();
+    }
+
+    pub(crate) fn clear_soft_prompt(&self) -> bool {
+        let had = self
+            .soft_prompt
+            .lock()
+            .map(|mut guard| guard.take().is_some())
+            .unwrap_or(false);
+        self.prefix.clear();
+        had
+    }
+
+    pub(crate) fn soft_prompt(&self) -> Option<Arc<super::SoftPromptState>> {
+        self.soft_prompt
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(Arc::clone))
+    }
+
+    pub(crate) fn prefix_key(&self, weights: PreparedCacheKey) -> PrefixCacheKey {
+        PrefixCacheKey {
+            weights,
+            soft_prompt_sha256: self.soft_prompt().map(|sp| sp.sha256.clone()),
+        }
     }
 
     pub(crate) fn prefix(&self) -> &super::prefix_cache::PrefixStateCache {

@@ -90,6 +90,57 @@ pub(super) static OVERLAY: StatementHelp = StatementHelp {
     related: &["USE", "DLA", "EXPORT SAFETENSORS", "DISCARD WEIGHT EDITS"],
 };
 
+pub(super) static LOAD_SOFT_PROMPT: StatementHelp = StatementHelp {
+    name: "LOAD SOFT_PROMPT",
+    aliases: &["SOFT_PROMPT"],
+    group: HelpGroup::Bind,
+    syntax: &["LOAD SOFT_PROMPT \"<path.pt | path.npy | path.safetensors>\";"],
+    does: &[
+        "Loads a continuous soft-prompt embedding prefix ([n_soft, hidden] or [1, n_soft, hidden])",
+        "from a PyTorch .pt checkpoint, NumPy .npy array, or safetensors file into the bound",
+        "VINDEX3 session. Subsequent INFER, GENERATE, DLA, and CAPTURE calls prepend these",
+        "continuous embeddings directly before token 0 in the model's traversal.",
+        "The soft-prompt KV / ShortConv continuation prefix is prefilled once and cached across",
+        "all prompts in the session.",
+    ],
+    examples: &[
+        "LOAD SOFT_PROMPT \"sp16_step160.pt\";",
+        "LOAD SOFT_PROMPT \"prefix.npy\";",
+    ],
+    needs: &[Need::Vindex3],
+    effect: &[
+        "In-memory only: nothing on disk is modified. Weights stay hot in PreparedCache.",
+        "Use CLEAR SOFT_PROMPT; to restore unprefixed prompt execution in 0ms.",
+    ],
+    operands: &[],
+    refusals: &[
+        "The session is not bound to a canonical VINDEX3 container.",
+        "The file is missing, uses an unsupported format, has non-finite values, or does not match hidden_size.",
+        "The PUBLIC_EXPLORER profile refuses LOAD SOFT_PROMPT.",
+    ],
+    related: &["CLEAR SOFT_PROMPT", "USE", "DLA", "INFER", "CAPTURE"],
+};
+
+pub(super) static CLEAR_SOFT_PROMPT: StatementHelp = StatementHelp {
+    name: "CLEAR SOFT_PROMPT",
+    aliases: &[],
+    group: HelpGroup::Bind,
+    syntax: &["CLEAR SOFT_PROMPT;"],
+    does: &[
+        "Clears any active continuous soft-prompt prefix from the bound VINDEX3 session and",
+        "restores normal unprefixed prompt execution while keeping prepared weights hot in RAM.",
+    ],
+    examples: &["CLEAR SOFT_PROMPT;"],
+    needs: &[Need::Vindex3],
+    effect: &["In-memory only. Clears the session's prefix KV cache and restores normal prompts."],
+    operands: &[],
+    refusals: &[
+        "The session is not bound to a canonical VINDEX3 container.",
+        "The PUBLIC_EXPLORER profile refuses CLEAR SOFT_PROMPT.",
+    ],
+    related: &["LOAD SOFT_PROMPT", "USE", "DLA"],
+};
+
 pub(super) static EXTRACT: StatementHelp = StatementHelp {
     name: "EXTRACT",
     aliases: &["EXTRACT MODEL"],

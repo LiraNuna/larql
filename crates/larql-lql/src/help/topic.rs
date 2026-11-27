@@ -47,6 +47,8 @@ topic_enum! {
         // Bind
         Use,
         Overlay,
+        LoadSoftPrompt,
+        ClearSoftPrompt,
         Extract,
         // Inspect
         Stats,

@@ -221,12 +221,15 @@ impl Session {
         };
 
         let can_prefix_cache = prefix_cache::plan_supports_prefix_cache(runtime);
-        let (observed, tap_out) = if let Some(ref key) = cache_key.filter(|_| can_prefix_cache) {
+        let soft_prompt = prepared_cache.soft_prompt();
+        let (observed, tap_out) = if let Some(ref wkey) = cache_key.filter(|_| can_prefix_cache) {
+            let pkey = prepared_cache.prefix_key(wkey.clone());
             let (mut kv, prefix_len) = prefix_cache::acquire_prefix_state(
                 runtime,
                 &ops,
                 prepared_cache.prefix(),
-                key,
+                &pkey,
+                soft_prompt.as_deref(),
                 &prompt_ids,
                 last,
             )?;
@@ -243,12 +246,33 @@ impl Session {
             )
             .map_err(|e| LqlError::exec("DLA forward pass failed", e))?;
             prepared_cache.prefix().record_snapshot(
-                key,
+                &pkey,
                 prompt_ids.clone(),
                 kv,
                 obs.output.logits.clone(),
             );
             (obs, to)
+        } else if let Some(ref sp) = soft_prompt {
+            let mut kv = v3_continuation(runtime)?.build();
+            larql_vindex::format::vindex3::opplan::exec::prefill_prepared_embeds(
+                plan,
+                &ops,
+                &sp.embeds,
+                runtime.backend(),
+                &mut *kv,
+            )
+            .map_err(|e| LqlError::exec("soft-prompt prefix prefill failed", e))?;
+            execute_prepared_prefill_position_exits_with_taps(
+                plan,
+                &ops,
+                &prompt_ids,
+                runtime.backend(),
+                &mut *kv,
+                &[last],
+                &taps,
+                &mut sink,
+            )
+            .map_err(|e| LqlError::exec("DLA forward pass failed", e))?
         } else {
             let continuation = v3_continuation(runtime)?;
             let state = requires_continuation(plan).then(|| continuation.build());

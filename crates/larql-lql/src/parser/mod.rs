@@ -12,6 +12,7 @@ mod mutation;
 mod overlay;
 mod patch;
 mod query;
+mod soft_prompt;
 mod trace;
 
 #[cfg(test)]
@@ -98,6 +99,8 @@ impl Parser {
             Token::Ident(ref s) if s.eq_ignore_ascii_case("CAPTURE") => self.parse_capture(),
             Token::Ident(ref s) if s.eq_ignore_ascii_case("DLA") => self.parse_dla(),
             Token::Ident(ref s) if s.eq_ignore_ascii_case("OVERLAY") => self.parse_overlay(),
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("LOAD") => self.parse_load(),
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("CLEAR") => self.parse_clear(),
             Token::Ident(ref s) if s.eq_ignore_ascii_case("HELP") => self.parse_help(),
             _ => Err(self.unknown_statement()),
         }

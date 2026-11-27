@@ -151,7 +151,9 @@ fn public_explorer_check(stmt: &Statement) -> Result<(), LqlError> {
         | RemovePatch { .. }
         | Trace { .. }
         | Dla { .. }
-        | Overlay { .. } => Err(LqlError::Refused {
+        | Overlay { .. }
+        | LoadSoftPrompt { .. }
+        | ClearSoftPrompt => Err(LqlError::Refused {
             profile: CapabilityProfile::PublicExplorer.name().into(),
             statement: stmt.verb().into(),
             served: PUBLIC_EXPLORER_SERVES.into(),

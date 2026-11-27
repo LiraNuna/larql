@@ -20,6 +20,8 @@ impl Statement {
             Statement::Diff { .. } => StatementTopic::Diff,
             Statement::Use { .. } => StatementTopic::Use,
             Statement::Overlay { .. } => StatementTopic::Overlay,
+            Statement::LoadSoftPrompt { .. } => StatementTopic::LoadSoftPrompt,
+            Statement::ClearSoftPrompt => StatementTopic::ClearSoftPrompt,
             Statement::Walk { .. } => StatementTopic::Walk,
             Statement::Infer { .. } => StatementTopic::Infer,
             Statement::Select { .. } => StatementTopic::Select,

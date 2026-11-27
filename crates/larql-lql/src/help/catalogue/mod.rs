@@ -21,6 +21,8 @@ pub fn statement(topic: StatementTopic) -> &'static StatementHelp {
     match topic {
         StatementTopic::Use => &bind::USE,
         StatementTopic::Overlay => &bind::OVERLAY,
+        StatementTopic::LoadSoftPrompt => &bind::LOAD_SOFT_PROMPT,
+        StatementTopic::ClearSoftPrompt => &bind::CLEAR_SOFT_PROMPT,
         StatementTopic::Extract => &bind::EXTRACT,
         StatementTopic::Stats => &inspect::STATS,
         StatementTopic::ShowComponents => &inspect::SHOW_COMPONENTS,

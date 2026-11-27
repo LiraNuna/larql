@@ -11,10 +11,10 @@ use std::sync::Mutex;
 
 use larql_kv::CanonicalKvState;
 use larql_vindex::format::vindex3::opplan::exec::continuation::plan_continuation_geometry;
-use larql_vindex::format::vindex3::opplan::exec::prefill_prepared;
 use larql_vindex::format::vindex3::opplan::exec::prepared::PreparedOperands;
+use larql_vindex::format::vindex3::opplan::exec::{prefill_prepared, prefill_prepared_embeds};
 
-use super::{PreparedCacheKey, V3Runtime};
+use super::{PrefixCacheKey, SoftPromptState, V3Runtime};
 use crate::error::LqlError;
 
 /// Minimum shared prefix length (in tokens) before splitting a prefill to snapshot the prefix.
@@ -30,7 +30,8 @@ struct PrefixSnapshot {
 
 #[derive(Default)]
 struct PrefixCacheInner {
-    key: Option<PreparedCacheKey>,
+    key: Option<PrefixCacheKey>,
+    soft_base: Option<CanonicalKvState>,
     entries: Vec<PrefixSnapshot>,
     last_prompt: Vec<u32>,
 }
@@ -45,15 +46,17 @@ impl PrefixStateCache {
     pub(crate) fn clear(&self) {
         if let Ok(mut guard) = self.inner.lock() {
             guard.key = None;
+            guard.soft_base = None;
             guard.entries.clear();
             guard.last_prompt.clear();
         }
     }
 
-    fn ensure_key(&self, key: &PreparedCacheKey) {
+    fn ensure_key(&self, key: &PrefixCacheKey) {
         let mut guard = self.inner.lock().unwrap();
         if guard.key.as_ref() != Some(key) {
             guard.key = Some(key.clone());
+            guard.soft_base = None;
             guard.entries.clear();
             guard.last_prompt.clear();
         }
@@ -61,7 +64,7 @@ impl PrefixStateCache {
 
     fn find_exact_with_logits(
         &self,
-        key: &PreparedCacheKey,
+        key: &PrefixCacheKey,
         tokens: &[u32],
     ) -> Option<(CanonicalKvState, Vec<f32>)> {
         let guard = self.inner.lock().unwrap();
@@ -79,7 +82,7 @@ impl PrefixStateCache {
 
     fn find_longest_prefix(
         &self,
-        key: &PreparedCacheKey,
+        key: &PrefixCacheKey,
         tokens: &[u32],
         max_prefix_len: usize,
     ) -> Option<(usize, CanonicalKvState)> {
@@ -100,7 +103,7 @@ impl PrefixStateCache {
 
     fn shared_prefix_with_last(
         &self,
-        key: &PreparedCacheKey,
+        key: &PrefixCacheKey,
         tokens: &[u32],
         max_prefix_len: usize,
     ) -> usize {
@@ -112,9 +115,24 @@ impl PrefixStateCache {
         common_prefix_len(&guard.last_prompt, tokens).min(limit)
     }
 
+    fn cached_soft_base(&self, key: &PrefixCacheKey) -> Option<CanonicalKvState> {
+        let guard = self.inner.lock().unwrap();
+        if guard.key.as_ref() != Some(key) {
+            return None;
+        }
+        guard.soft_base.clone()
+    }
+
+    fn record_soft_base(&self, key: &PrefixCacheKey, kv: CanonicalKvState) {
+        let mut guard = self.inner.lock().unwrap();
+        if guard.key.as_ref() == Some(key) {
+            guard.soft_base = Some(kv);
+        }
+    }
+
     pub(crate) fn record_snapshot(
         &self,
-        key: &PreparedCacheKey,
+        key: &PrefixCacheKey,
         tokens: Vec<u32>,
         kv: CanonicalKvState,
         last_logits: Option<Vec<f32>>,
@@ -141,7 +159,7 @@ impl PrefixStateCache {
 
     fn record_prefix_only(
         &self,
-        key: &PreparedCacheKey,
+        key: &PrefixCacheKey,
         tokens: Vec<u32>,
         kv: CanonicalKvState,
         last_logits: Option<Vec<f32>>,
@@ -165,7 +183,7 @@ impl PrefixStateCache {
         });
     }
 
-    fn record_last_prompt(&self, key: &PreparedCacheKey, tokens: &[u32]) {
+    fn record_last_prompt(&self, key: &PrefixCacheKey, tokens: &[u32]) {
         let mut guard = self.inner.lock().unwrap();
         if guard.key.as_ref() == Some(key) {
             guard.last_prompt = tokens.to_vec();
@@ -183,16 +201,38 @@ pub(crate) fn plan_supports_prefix_cache(runtime: &V3Runtime) -> bool {
     plan.residual_topology.is_single_stream() && plan_continuation_geometry(plan).is_ok()
 }
 
+fn initial_kv_state(
+    runtime: &V3Runtime,
+    ops: &PreparedOperands,
+    cache: &PrefixStateCache,
+    key: &PrefixCacheKey,
+    soft_prompt: Option<&SoftPromptState>,
+) -> Result<CanonicalKvState, LqlError> {
+    let Some(sp) = soft_prompt else {
+        return Ok(CanonicalKvState::new());
+    };
+    if let Some(kv) = cache.cached_soft_base(key) {
+        return Ok(kv);
+    }
+    let mut kv = CanonicalKvState::new();
+    prefill_prepared_embeds(runtime.plan(), ops, &sp.embeds, runtime.backend(), &mut kv)
+        .map_err(|e| LqlError::exec("soft-prompt prefix prefill failed", e))?;
+    cache.record_soft_base(key, kv.clone());
+    Ok(kv)
+}
+
 /// Acquire a `CanonicalKvState` positioned at `prefix_len <= max_prefix_len` for `prompt_ids`:
 /// - Reuses the longest cached strict prefix snapshot if one matches;
 /// - Otherwise, if `prompt_ids` shares a prefix of at least `MIN_SHARED_PREFIX_TOKENS` with
-///   the previous prompt, prefills that shared prefix once, caches it, and returns it;
-/// - Otherwise returns a fresh `CanonicalKvState` at position 0.
+///   the previous prompt, prefills that shared prefix once (on top of any active soft prompt),
+///   caches it, and returns it;
+/// - Otherwise returns a fresh `CanonicalKvState` (prefilled with any active soft prompt).
 pub(crate) fn acquire_prefix_state(
     runtime: &V3Runtime,
     ops: &PreparedOperands,
     cache: &PrefixStateCache,
-    key: &PreparedCacheKey,
+    key: &PrefixCacheKey,
+    soft_prompt: Option<&SoftPromptState>,
     prompt_ids: &[u32],
     max_prefix_len: usize,
 ) -> Result<(CanonicalKvState, usize), LqlError> {
@@ -203,7 +243,7 @@ pub(crate) fn acquire_prefix_state(
     }
     let lcp = cache.shared_prefix_with_last(key, prompt_ids, limit);
     if lcp >= MIN_SHARED_PREFIX_TOKENS {
-        let mut kv = CanonicalKvState::new();
+        let mut kv = initial_kv_state(runtime, ops, cache, key, soft_prompt)?;
         let prefix_out = prefill_prepared(
             runtime.plan(),
             ops,
@@ -220,16 +260,18 @@ pub(crate) fn acquire_prefix_state(
         );
         return Ok((kv, lcp));
     }
-    Ok((CanonicalKvState::new(), 0))
+    let kv = initial_kv_state(runtime, ops, cache, key, soft_prompt)?;
+    Ok((kv, 0))
 }
 
 /// Prefill `prompt_ids` into a `CanonicalKvState` (reusing an exact cached match or shared
-/// prefix snapshot) and return `(kv, last_logits)` ready for autoregressive decoding.
+/// prefix snapshot, plus any active soft-prompt prefix) and return `(kv, last_logits)`.
 pub(crate) fn prefill_for_generate_cached(
     runtime: &V3Runtime,
     ops: &PreparedOperands,
     cache: &PrefixStateCache,
-    key: &PreparedCacheKey,
+    key: &PrefixCacheKey,
+    soft_prompt: Option<&SoftPromptState>,
     prompt_ids: &[u32],
 ) -> Result<(CanonicalKvState, Vec<f32>), LqlError> {
     cache.ensure_key(key);
@@ -242,6 +284,7 @@ pub(crate) fn prefill_for_generate_cached(
         ops,
         cache,
         key,
+        soft_prompt,
         prompt_ids,
         prompt_ids.len().saturating_sub(1),
     )?;

@@ -12,13 +12,13 @@ use larql_inference::vindex3::{PlaneEvent, SelectedContinuation};
 use larql_vindex::format::vindex3::opplan::exec::prepared::PreparedOperands;
 use larql_vindex::format::vindex3::opplan::exec::{
     execute_prepared_position_exits_with_taps, execute_prepared_prefill_position_exits_with_taps,
-    requires_continuation, BatchTapRequest, Plane,
+    prefill_prepared_embeds, requires_continuation, BatchTapRequest, Plane,
 };
 use larql_vindex::VindexError;
 
 use super::super::{
     prefix_cache::{self, PrefixStateCache},
-    PreparedCacheKey, V3Runtime,
+    PrefixCacheKey, SoftPromptState, V3Runtime,
 };
 use super::Rows;
 use crate::ast::CaptureSite;
@@ -33,7 +33,8 @@ const NO_HEAD: &str = "the component carries no output head";
 pub(super) fn capture(
     runtime: &V3Runtime,
     ops: &PreparedOperands,
-    prefix: Option<(&PrefixStateCache, &PreparedCacheKey)>,
+    prefix: Option<(&PrefixStateCache, &PrefixCacheKey)>,
+    soft_prompt: Option<&SoftPromptState>,
     continuation: &SelectedContinuation,
     ids: &[u32],
     site: CaptureSite,
@@ -44,6 +45,7 @@ pub(super) fn capture(
         runtime,
         ops,
         prefix,
+        soft_prompt,
         continuation,
         ids,
         &[site],
@@ -60,7 +62,8 @@ pub(super) fn capture(
 pub(super) fn capture_many(
     runtime: &V3Runtime,
     ops: &PreparedOperands,
-    prefix: Option<(&PrefixStateCache, &PreparedCacheKey)>,
+    prefix: Option<(&PrefixStateCache, &PrefixCacheKey)>,
+    soft_prompt: Option<&SoftPromptState>,
     continuation: &SelectedContinuation,
     ids: &[u32],
     sites: &[CaptureSite],
@@ -95,7 +98,15 @@ pub(super) fn capture_many(
     let min_pos = positions.iter().copied().min().unwrap_or(0);
     let (mut cached_kv, prefix_len) = if can_prefix_cache {
         let (cache, key) = prefix.unwrap();
-        let (kv, p) = prefix_cache::acquire_prefix_state(runtime, ops, cache, key, ids, min_pos)?;
+        let (kv, p) = prefix_cache::acquire_prefix_state(
+            runtime,
+            ops,
+            cache,
+            key,
+            soft_prompt,
+            ids,
+            min_pos,
+        )?;
         (Some(kv), p)
     } else {
         (None, 0)
@@ -156,6 +167,21 @@ pub(super) fn capture_many(
             );
         }
         (obs, to)
+    } else if let Some(sp) = soft_prompt {
+        let mut kv = continuation.build();
+        prefill_prepared_embeds(plan, ops, &sp.embeds, runtime.backend(), &mut *kv)
+            .map_err(|e| LqlError::exec("soft-prompt prefix prefill failed", e))?;
+        execute_prepared_prefill_position_exits_with_taps(
+            plan,
+            ops,
+            ids,
+            runtime.backend(),
+            &mut *kv,
+            exit_positions,
+            &taps,
+            &mut sink,
+        )
+        .map_err(|e| LqlError::exec("capture pass failed", e))?
     } else {
         // A stack that keeps state beyond softmax attention runs over a fresh provider, as INFER's pass does.
         let state = requires_continuation(plan).then(|| continuation.build());

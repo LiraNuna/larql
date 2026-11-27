@@ -369,6 +369,15 @@ pub enum Statement {
         kind: OverlayKind,
     },
 
+    /// `LOAD SOFT_PROMPT "<path>";` (VINDEX3): load a continuous `[n_soft, hidden]` soft-prompt
+    /// prefix (`.pt`, `.npy`, or `.safetensors`) prepended before token 0 in `INFER`/`DLA`/`CAPTURE`.
+    LoadSoftPrompt {
+        path: String,
+    },
+
+    /// `CLEAR SOFT_PROMPT;` (VINDEX3): remove any active soft-prompt prefix in 0ms.
+    ClearSoftPrompt,
+
     // ── Help ──
     /// `HELP;` prints every statement's syntax; `HELP <topic>;` prints one page of the help catalogue
     /// (`crate::help`). `topic` is the words after `HELP`, as written. Read-only, and it needs no backend.
@@ -436,6 +445,8 @@ impl Statement {
             Statement::Trace { .. } => "TRACE",
             Statement::Dla { .. } => "DLA",
             Statement::Overlay { .. } => "OVERLAY",
+            Statement::LoadSoftPrompt { .. } => "LOAD SOFT_PROMPT",
+            Statement::ClearSoftPrompt => "CLEAR SOFT_PROMPT",
             Statement::Help { .. } => "HELP",
             Statement::Pipe { .. } => "|> (pipe)",
         }

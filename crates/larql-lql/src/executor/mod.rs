@@ -58,7 +58,7 @@ pub mod operations {
         npy_file_bytes, operand_bits_from_values, operand_origin, CaptureGeometry, CaptureSpec,
         Captured, DiscardedWeightEdits, DlaChannelRow, DlaColumnRow, DlaHeadRow, DlaLayerRow,
         DlaReport, EditedElement, Generated, NpyDescr, OperandValues, Prediction, Predictions,
-        StagedLowRank, StagedWeightDelta, WeightRead,
+        SoftPromptSummary, StagedLowRank, StagedWeightDelta, WeightRead,
     };
     pub use crate::ast::{
         CaptureContinuation, CaptureLayers, CapturePositions, CaptureSite, DlaTarget,
@@ -692,6 +692,8 @@ impl Session {
                 *top_channels,
             ),
             Statement::Overlay { kind } => self.exec_overlay(kind),
+            Statement::LoadSoftPrompt { path } => self.exec_load_soft_prompt(path),
+            Statement::ClearSoftPrompt => self.exec_clear_soft_prompt(),
         }
     }
 

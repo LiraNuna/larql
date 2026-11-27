@@ -75,6 +75,8 @@ impl Statement {
             | Statement::RemovePatch { .. }
             | Statement::Dla { .. }
             | Statement::Overlay { .. }
+            | Statement::LoadSoftPrompt { .. }
+            | Statement::ClearSoftPrompt
             | Statement::Help { .. } => false,
         }
     }

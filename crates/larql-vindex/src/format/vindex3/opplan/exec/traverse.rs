@@ -42,6 +42,24 @@ pub(super) fn traverse_with_taps<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
     backend: &B,
     resume: Option<ResumePoint>,
     sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
+    kv: Option<&mut K>,
+    mutation: Mutation,
+    taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
+) -> Result<FinalOutput, VindexError> {
+    traverse_inputs_with_taps(
+        plan, ops, tokens, None, backend, resume, sink, kv, mutation, taps,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn traverse_inputs_with_taps<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
+    tokens: &[u32],
+    input_embeds: Option<&[Vec<f32>]>,
+    backend: &B,
+    resume: Option<ResumePoint>,
+    sink: &mut dyn FnMut(PlaneEvent) -> Result<(), VindexError>,
     mut kv: Option<&mut K>,
     mutation: Mutation,
     mut taps: Option<(&BatchTapRequest, &mut BatchTapOutput)>,
@@ -236,33 +254,49 @@ pub(super) fn traverse_with_taps<B: PlanBackend + ?Sized, K: KvState + ?Sized>(
             (point.next_layer, point.hidden)
         }
         None => {
-            let table = ops.embed_table().ok_or_else(|| {
-                VindexError::Parse(
-                    "this prepared image carries no embedding table — a layer-range slice \
-                     consumes hidden states, not token ids"
-                        .to_string(),
-                )
-            })?;
-            let mut h: Vec<Vec<f32>> = tokens
-                .iter()
-                .map(|&t| backend.embed(table, hidden, t, embedding.scale))
-                .collect();
-            // The judged embedding normalisation, when the plan carries
-            // one. It is weightless — no operand, hence the empty weight
-            // slice — and it runs *after* any embedding scale, matching
-            // the upstream order in which the scale belongs to the table
-            // and the norm to the lookup.
-            if let Some(norm) = embedding.norm {
-                for row in h.iter_mut() {
-                    *row = backend.norm(NormCall {
-                        kind: norm.kind,
-                        x: row,
-                        weight: &[],
-                        weight_offset: 0.0,
-                        eps: norm.eps,
-                    });
+            let h: Vec<Vec<f32>> = if let Some(embeds) = input_embeds {
+                if embeds.is_empty() {
+                    return Err(VindexError::Parse(
+                        "cannot execute over an empty continuous embedding prefix".to_string(),
+                    ));
                 }
-            }
+                if let Some((i, row)) = embeds.iter().enumerate().find(|(_, r)| r.len() != hidden) {
+                    return Err(VindexError::Parse(format!(
+                        "input embedding row {i} has width {}, expected hidden size {hidden}",
+                        row.len()
+                    )));
+                }
+                embeds.to_vec()
+            } else {
+                let table = ops.embed_table().ok_or_else(|| {
+                    VindexError::Parse(
+                        "this prepared image carries no embedding table — a layer-range slice \
+                         consumes hidden states, not token ids"
+                            .to_string(),
+                    )
+                })?;
+                let mut rows: Vec<Vec<f32>> = tokens
+                    .iter()
+                    .map(|&t| backend.embed(table, hidden, t, embedding.scale))
+                    .collect();
+                // The judged embedding normalisation, when the plan carries
+                // one. It is weightless — no operand, hence the empty weight
+                // slice — and it runs *after* any embedding scale, matching
+                // the upstream order in which the scale belongs to the table
+                // and the norm to the lookup.
+                if let Some(norm) = embedding.norm {
+                    for row in rows.iter_mut() {
+                        *row = backend.norm(NormCall {
+                            kind: norm.kind,
+                            x: row,
+                            weight: &[],
+                            weight_offset: 0.0,
+                            eps: norm.eps,
+                        });
+                    }
+                }
+                rows
+            };
             // The embedding enters a hyper-connected stack replicated
             // into every stream, per position — after its scale and
             // norm, which belong to the lookup.

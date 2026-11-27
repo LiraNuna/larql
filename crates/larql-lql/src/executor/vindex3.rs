@@ -33,6 +33,7 @@ mod overlay;
 mod overrides;
 mod prefix_cache;
 mod session;
+mod soft_prompt;
 mod tensors;
 mod weights;
 pub(crate) use capture::{AppliedPatchFile, CaptureMultiRequest, CaptureRequest};
@@ -44,6 +45,7 @@ pub use low_rank::{operand_bits_from_values, operand_origin, OperandValues, Stag
 pub use npy::{npy_file_bytes, NpyDescr};
 pub(crate) use overrides::*;
 pub(crate) use session::*;
+pub use soft_prompt::{SoftPromptState, SoftPromptSummary};
 pub use weights::{DiscardedWeightEdits, EditedElement, StagedWeightDelta};
 
 /// The statements a VINDEX3 binding serves today. Everything else gets
@@ -237,15 +239,18 @@ impl Session {
             Ok(())
         };
         let (ops, _, cache_key) = prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let soft_prompt = prepared_cache.soft_prompt();
         let plan = runtime.plan();
-        let output = if let Some(ref key) = cache_key
+        let output = if let Some(ref wkey) = cache_key
             .filter(|_| !prompt_ids.is_empty() && prefix_cache::plan_supports_prefix_cache(runtime))
         {
+            let pkey = prepared_cache.prefix_key(wkey.clone());
             let (mut kv, prefix_len) = prefix_cache::acquire_prefix_state(
                 runtime,
                 &ops,
                 prepared_cache.prefix(),
-                key,
+                &pkey,
+                soft_prompt.as_deref(),
                 &prompt_ids,
                 prompt_ids.len().saturating_sub(1),
             )?;
@@ -259,12 +264,31 @@ impl Session {
             )
             .map_err(|e| LqlError::exec("v3 prefill failed", e))?;
             prepared_cache.prefix().record_snapshot(
-                key,
+                &pkey,
                 prompt_ids.clone(),
                 kv,
                 out.logits.clone(),
             );
             out
+        } else if let Some(ref sp) = soft_prompt {
+            let mut kv = v3_continuation(runtime)?.build();
+            larql_vindex::format::vindex3::opplan::exec::prefill_prepared_embeds(
+                plan,
+                &ops,
+                &sp.embeds,
+                runtime.backend(),
+                &mut *kv,
+            )
+            .map_err(|e| LqlError::exec("soft-prompt prefix prefill failed", e))?;
+            prefill_prepared_observed(
+                plan,
+                &ops,
+                &prompt_ids,
+                runtime.backend(),
+                &mut *kv,
+                &mut sink,
+            )
+            .map_err(|e| LqlError::exec("v3 prefill failed", e))?
         } else if requires_continuation(plan) {
             let continuation = v3_continuation(runtime)?;
             execute_prepared_streaming_in(

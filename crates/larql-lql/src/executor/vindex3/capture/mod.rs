@@ -292,11 +292,14 @@ impl Session {
         let positions = sequence::positions(spec.positions, &sequence)?;
         let (ops, overrides, cache_key) =
             prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let soft_prompt = prepared_cache.soft_prompt();
+        let pkey = cache_key.map(|k| prepared_cache.prefix_key(k));
         let continuation = v3_continuation(runtime)?;
         let mut blocks = batch::capture(
             runtime,
             &ops,
-            cache_key.as_ref().map(|k| (prepared_cache.prefix(), k)),
+            pkey.as_ref().map(|k| (prepared_cache.prefix(), k)),
+            soft_prompt.as_deref(),
             &continuation,
             &sequence.ids,
             site,
@@ -306,13 +309,9 @@ impl Session {
         let path = PATH_INFER_PASS;
         let cross_check = serde_json::Value::Null;
         let stacked = matches!(spec.layers, Some(CaptureLayers::Many(_)));
-        let shape = finalize_blocks_and_shape(
-            site,
-            &mut blocks,
-            positions.len(),
-            stacked,
-            sequence.ids.len(),
-        )?;
+        let attn_seq_len = sequence.ids.len() + soft_prompt.as_ref().map_or(0, |sp| sp.n_soft);
+        let shape =
+            finalize_blocks_and_shape(site, &mut blocks, positions.len(), stacked, attn_seq_len)?;
 
         let decode = |id: u32| tokenizer.decode(&[id], false).unwrap_or_default();
         let position_records: Vec<serde_json::Value> = positions
@@ -511,11 +510,14 @@ impl Session {
         let positions = sequence::positions(request.positions, &sequence)?;
         let (ops, overrides, cache_key) =
             prepared_operands_for_session(runtime, overlay, prepared_cache)?;
+        let soft_prompt = prepared_cache.soft_prompt();
+        let pkey = cache_key.map(|k| prepared_cache.prefix_key(k));
         let continuation = v3_continuation(runtime)?;
         let mut all_blocks = batch::capture_many(
             runtime,
             &ops,
-            cache_key.as_ref().map(|k| (prepared_cache.prefix(), k)),
+            pkey.as_ref().map(|k| (prepared_cache.prefix(), k)),
+            soft_prompt.as_deref(),
             &continuation,
             &sequence.ids,
             request.sites,
@@ -551,12 +553,13 @@ impl Session {
         for (site, npy_path, sidecar_path) in &planned_paths {
             let mut blocks = all_blocks.remove(site).unwrap_or_default();
             let site_stacked = site.per_layer() && stacked;
+            let attn_seq_len = sequence.ids.len() + soft_prompt.as_ref().map_or(0, |sp| sp.n_soft);
             let shape = match finalize_blocks_and_shape(
                 *site,
                 &mut blocks,
                 positions.len(),
                 site_stacked,
-                sequence.ids.len(),
+                attn_seq_len,
             ) {
                 Ok(s) => s,
                 Err(e) => {

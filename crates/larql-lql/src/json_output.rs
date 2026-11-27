@@ -211,6 +211,22 @@ fn execute_json_statement(
                     "data": summary,
                 }));
             }
+            Statement::LoadSoftPrompt { path } => {
+                let summary = session.load_soft_prompt(path)?;
+                return Ok(json!({
+                    "ok": true,
+                    "statement": "LOAD SOFT_PROMPT",
+                    "data": summary,
+                }));
+            }
+            Statement::ClearSoftPrompt => {
+                let cleared = session.clear_soft_prompt()?;
+                return Ok(json!({
+                    "ok": true,
+                    "statement": "CLEAR SOFT_PROMPT",
+                    "data": { "cleared": cleared },
+                }));
+            }
             _ => {}
         }
     }

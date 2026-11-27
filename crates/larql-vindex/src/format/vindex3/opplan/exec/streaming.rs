@@ -296,3 +296,41 @@ pub fn prefill_prepared_observed_with_taps<B: PlanBackend + ?Sized>(
     kv.set_position(base + tokens.len());
     Ok(out)
 }
+
+/// Batch-prefill continuous prefix embeddings (`[n_soft][hidden]`) into `kv` and advance
+/// `kv.position()` by `embeds.len()`. Enables native soft-prompt prefix injection: subsequent
+/// [`prefill_prepared`] / [`execute_prepared_prefill_position_exits_with_taps`] calls over
+/// token IDs execute directly at positions `n_soft .. n_soft + tokens.len()` over the
+/// populated KV / ShortConv continuation state.
+pub fn prefill_prepared_embeds<B: PlanBackend + ?Sized>(
+    plan: &ComponentOpPlan,
+    ops: &PreparedOperands,
+    embeds: &[Vec<f32>],
+    backend: &B,
+    kv: &mut dyn KvState,
+) -> Result<FinalOutput, VindexError> {
+    ops.ensure_stack_ready()?;
+    if matches!(ops.slice(), prepared::ExecutionSlice::Endpoints) {
+        return Err(VindexError::Parse(
+            "endpoints-only operands require a distributed coordinator".into(),
+        ));
+    }
+    kv.prepare_continuation(
+        &continuation::plan_continuation_geometry(plan).map_err(VindexError::Parse)?,
+    )?;
+    let base = kv.position();
+    let out = traverse_inputs_with_taps(
+        plan,
+        ops,
+        &[],
+        Some(embeds),
+        backend,
+        None,
+        &mut |_| Ok(()),
+        Some(&mut *kv),
+        Mutation::None,
+        None,
+    )?;
+    kv.set_position(base + embeds.len());
+    Ok(out)
+}
