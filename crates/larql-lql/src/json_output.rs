@@ -124,8 +124,8 @@ fn execute_json_statement(
             } => {
                 let report = session.dla(
                     prompt,
-                    target_a,
-                    target_b,
+                    target_a.clone(),
+                    target_b.clone(),
                     layers.as_ref(),
                     *top_columns,
                     *top_heads,
@@ -134,6 +134,30 @@ fn execute_json_statement(
                 return Ok(json!({
                     "ok": true,
                     "statement": "DLA",
+                    "data": report,
+                }));
+            }
+            Statement::DiffDla {
+                prompt,
+                target_a,
+                target_b,
+                layers,
+                top_columns,
+                top_heads,
+                top_channels,
+            } => {
+                let report = session.diff_dla(
+                    prompt,
+                    target_a.clone(),
+                    target_b.clone(),
+                    layers.as_ref(),
+                    *top_columns,
+                    *top_heads,
+                    *top_channels,
+                )?;
+                return Ok(json!({
+                    "ok": true,
+                    "statement": "DIFF DLA",
                     "data": report,
                 }));
             }

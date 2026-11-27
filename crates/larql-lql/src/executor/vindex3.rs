@@ -21,6 +21,7 @@ use crate::executor::{Backend, Session};
 
 mod capture;
 mod dla;
+mod dla_diff;
 mod dla_math;
 mod export_safetensors;
 mod export_weight;
@@ -39,6 +40,7 @@ mod weights;
 pub(crate) use capture::{AppliedPatchFile, CaptureMultiRequest, CaptureRequest};
 pub use capture::{CaptureGeometry, CaptureSpec, Captured};
 pub use dla::{DlaChannelRow, DlaColumnRow, DlaHeadRow, DlaLayerRow, DlaReport};
+pub use dla_diff::{DlaChannelDelta, DlaColumnDelta, DlaDiffReport, DlaHeadDelta, DlaLayerDelta};
 pub use export_weight::WeightRead;
 pub(crate) use live::{live_weight_lines, nothing_in_effect_line};
 pub use low_rank::{operand_bits_from_values, operand_origin, OperandValues, StagedLowRank};

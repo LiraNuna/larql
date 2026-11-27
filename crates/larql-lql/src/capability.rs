@@ -151,6 +151,7 @@ fn public_explorer_check(stmt: &Statement) -> Result<(), LqlError> {
         | RemovePatch { .. }
         | Trace { .. }
         | Dla { .. }
+        | DiffDla { .. }
         | Overlay { .. }
         | LoadSoftPrompt { .. }
         | ClearSoftPrompt => Err(LqlError::Refused {

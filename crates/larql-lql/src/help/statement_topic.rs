@@ -17,7 +17,7 @@ impl Statement {
         match self {
             Statement::Extract { .. } => StatementTopic::Extract,
             Statement::Compile { .. } => StatementTopic::Compile,
-            Statement::Diff { .. } => StatementTopic::Diff,
+            Statement::Diff { .. } | Statement::DiffDla { .. } => StatementTopic::Diff,
             Statement::Use { .. } => StatementTopic::Use,
             Statement::Overlay { .. } => StatementTopic::Overlay,
             Statement::LoadSoftPrompt { .. } => StatementTopic::LoadSoftPrompt,

@@ -74,6 +74,7 @@ impl Statement {
             | Statement::ShowPatches
             | Statement::RemovePatch { .. }
             | Statement::Dla { .. }
+            | Statement::DiffDla { .. }
             | Statement::Overlay { .. }
             | Statement::LoadSoftPrompt { .. }
             | Statement::ClearSoftPrompt

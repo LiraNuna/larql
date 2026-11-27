@@ -362,6 +362,19 @@ pub enum Statement {
         top_channels: Option<u32>,
     },
 
+    /// `DIFF DLA "<prompt>" FOR ... VS ... [AT LAYERS (...)] [TOP <k> NEURONS] [TOP <m> HEADS] [TOP <c> CHANNELS];`
+    /// Compares the session's active state (weight overlay/edits + soft prompt) against the
+    /// untouched bound Base container in one hot session.
+    DiffDla {
+        prompt: String,
+        target_a: DlaTarget,
+        target_b: DlaTarget,
+        layers: Option<CaptureLayers>,
+        top_columns: Option<u32>,
+        top_heads: Option<u32>,
+        top_channels: Option<u32>,
+    },
+
     /// `OVERLAY SAFETENSORS "<path>" | OVERLAY LORA "<adapter_dir>" [SCALE <f>] | OVERLAY CLEAR`
     /// (VINDEX3): mount a delta/full HF safetensors checkpoint or PEFT LoRA adapter in memory
     /// over the bound read-only VINDEX3 container (skipping byte-identical tensors), or clear it.
@@ -399,7 +412,7 @@ impl Statement {
         match self {
             Statement::Extract { .. } => "EXTRACT",
             Statement::Compile { .. } => "COMPILE",
-            Statement::Diff { .. } => "DIFF",
+            Statement::Diff { .. } | Statement::DiffDla { .. } => "DIFF",
             Statement::Use { .. } => "USE",
             Statement::Walk { .. } => "WALK",
             Statement::Infer { .. } => "INFER",

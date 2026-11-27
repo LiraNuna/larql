@@ -338,20 +338,25 @@ pub(super) static SELECT: StatementHelp = StatementHelp {
 
 pub(super) static DIFF: StatementHelp = StatementHelp {
     name: "DIFF",
-    aliases: &["DIFF INTO PATCH"],
+    aliases: &["DIFF INTO PATCH", "DIFF DLA"],
     group: HelpGroup::Inspect,
     syntax: &[
         "DIFF {CURRENT | \"<a>\"} {CURRENT | \"<b>\"} [PHYSICAL] [LAYER <n>] [RELATION \"<r>\"] [LIMIT <n>] [INTO PATCH \"<file.vlp>\"];",
+        "DIFF DLA \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>} [AT LAYERS (...)] [TOP <k> NEURONS] [TOP <m> HEADS] [TOP <c> CHANNELS];",
     ],
     does: &[
         "Compares two vindexes or containers. The default report is logical: knowledge edges and",
         "feature slots that differ. PHYSICAL (VINDEX3) lists the segments whose hash differs.",
         "INTO PATCH writes the difference as a .vlp patch (VINDEX2 sides only).",
+        "DIFF DLA compares the session's active state (OVERLAY / live edits / SOFT_PROMPT) against",
+        "the untouched bound Base container in one hot session and ranks exact per-layer, per-head,",
+        "per-neuron, and per-channel deltas (candidate - base).",
     ],
     examples: &[
         "DIFF \"base.vindex3\" \"edited.vindex3\";",
         "DIFF \"base.vindex3\" \"edited.vindex3\" PHYSICAL;",
         "DIFF \"base.vindex\" CURRENT INTO PATCH \"changes.vlp\";",
+        "DIFF DLA \"The capital of France is\" FOR \" Paris\" VS \" London\" AT LAYERS (0..24) TOP 12 HEADS TOP 12 NEURONS;",
     ],
     needs: &[Need::Other(
         "A bound vindex or container when either side is CURRENT.",

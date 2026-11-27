@@ -176,6 +176,20 @@ impl Parser {
 
     pub(crate) fn parse_diff(&mut self) -> Result<Statement, ParseError> {
         self.expect_keyword(Keyword::Diff)?;
+        if matches!(self.peek(), crate::lexer::Token::Ident(ref s) if s.eq_ignore_ascii_case("DLA"))
+        {
+            self.advance();
+            let b = self.parse_dla_body()?;
+            return Ok(Statement::DiffDla {
+                prompt: b.prompt,
+                target_a: b.target_a,
+                target_b: b.target_b,
+                layers: b.layers,
+                top_columns: b.top_columns,
+                top_heads: b.top_heads,
+                top_channels: b.top_channels,
+            });
+        }
         let a = self.parse_vindex_ref()?;
         let b = self.parse_vindex_ref()?;
 

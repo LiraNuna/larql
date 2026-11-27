@@ -56,7 +56,8 @@ pub mod operations {
     };
     pub use super::vindex3::{
         npy_file_bytes, operand_bits_from_values, operand_origin, CaptureGeometry, CaptureSpec,
-        Captured, DiscardedWeightEdits, DlaChannelRow, DlaColumnRow, DlaHeadRow, DlaLayerRow,
+        Captured, DiscardedWeightEdits, DlaChannelDelta, DlaChannelRow, DlaColumnDelta,
+        DlaColumnRow, DlaDiffReport, DlaHeadDelta, DlaHeadRow, DlaLayerDelta, DlaLayerRow,
         DlaReport, EditedElement, Generated, NpyDescr, OperandValues, Prediction, Predictions,
         SoftPromptSummary, StagedLowRank, StagedWeightDelta, WeightRead,
     };
@@ -683,6 +684,23 @@ impl Session {
                 top_heads,
                 top_channels,
             } => self.exec_dla(
+                prompt,
+                target_a,
+                target_b,
+                layers.as_ref(),
+                *top_columns,
+                *top_heads,
+                *top_channels,
+            ),
+            Statement::DiffDla {
+                prompt,
+                target_a,
+                target_b,
+                layers,
+                top_columns,
+                top_heads,
+                top_channels,
+            } => self.exec_diff_dla(
                 prompt,
                 target_a,
                 target_b,

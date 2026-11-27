@@ -201,6 +201,31 @@ pub(crate) fn prepared_operands_for_session(
     Ok((ops, overrides, Some(key)))
 }
 
+/// Return the unpatched base container's resident [`PreparedOperands`] (loading and caching
+/// `cache.base` once if needed) without modifying `cache.patched` or any active soft prompt.
+pub(crate) fn prepared_operands_for_base(
+    runtime: &V3Runtime,
+    cache: &PreparedCache,
+) -> Result<(Arc<PreparedOperands>, PreparedCacheKey), LqlError> {
+    let key = PreparedCacheKey {
+        patched_tensors: Vec::new(),
+    };
+    if let Some(base) = cache.base.lock().unwrap().as_ref() {
+        return Ok((Arc::clone(base), key));
+    }
+    let ops = Arc::new(
+        PreparedOperands::load(
+            runtime.plan(),
+            runtime.operands(),
+            runtime.backend(),
+            ExecutionSlice::Full,
+        )
+        .map_err(|e| LqlError::exec("prepare base operands failed", e))?,
+    );
+    *cache.base.lock().unwrap() = Some(Arc::clone(&ops));
+    Ok((ops, key))
+}
+
 /// The one raw-prompt encoder every V3 surface calls — the BOS rule
 /// lives with it in larql-inference, not here.
 pub(crate) use larql_inference::vindex3::encode_raw_prompt;

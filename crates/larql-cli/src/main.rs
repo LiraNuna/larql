@@ -385,7 +385,8 @@ enum LqlOutputFormat {
 struct LqlArgs {
     /// One or more LQL statements separated by `;`, as one argument
     /// (e.g. `USE "model.vindex3"; STATS;`). `HELP;` lists the statements.
-    statement: String,
+    /// Optional only when `--prompts-jsonl` is supplied.
+    statement: Option<String>,
 
     /// Where a VINDEX3 container bound by `USE` may take its execution representation from: `stored`
     /// (the default: the stored weights execute, nothing is manufactured at load), `auto` (the CPU loader
@@ -395,9 +396,19 @@ struct LqlArgs {
     representation_source: Option<String>,
 
     /// Output format for batch execution: `text` (default human-readable lines) or `json`
-    /// (structured JSON document with typed payloads for DLA, INFER, and EXPORT SAFETENSORS).
+    /// (structured JSON document with typed payloads for DLA, DIFF DLA, INFER, OVERLAY, and EXPORT).
     #[arg(long, value_enum, default_value_t = LqlOutputFormat::Text)]
     format: LqlOutputFormat,
+
+    /// Shorthand for `--format json`.
+    #[arg(long)]
+    json: bool,
+
+    /// Execute a newline-delimited JSON batch of raw probes (`dla`, `diff_dla`, `infer`,
+    /// `generate`) directly against the session after running any setup `statement`, with zero
+    /// shell or LQL string escaping, emitting a single structured JSON response.
+    #[arg(long, value_name = "FILE")]
+    prompts_jsonl: Option<std::path::PathBuf>,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -509,12 +520,37 @@ fn real_main() -> i32 {
             Err(e) => Err(e.into()),
         },
         Commands::Lql(args) => {
+            let effective_format = if args.json || args.prompts_jsonl.is_some() {
+                LqlOutputFormat::Json
+            } else {
+                args.format
+            };
+            if args.statement.is_none() && args.prompts_jsonl.is_none() {
+                let msg =
+                    "missing LQL statement (pass a statement string or --prompts-jsonl <FILE>)";
+                match effective_format {
+                    LqlOutputFormat::Text => eprintln!("Error: {msg}"),
+                    LqlOutputFormat::Json => {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "ok": false,
+                                "errors": 1,
+                                "contract_violations": 0,
+                                "error": msg,
+                                "results": [],
+                            })
+                        );
+                    }
+                }
+                return LQL_FAILURE_EXIT;
+            }
             let mut session = match lql_session::session_with(args.representation_source.as_deref())
             {
                 Ok(session) => session,
                 Err(e) => {
                     // A usage error in the command itself: the same status as a statement that failed.
-                    match args.format {
+                    match effective_format {
                         LqlOutputFormat::Text => println!("Error: {e}"),
                         LqlOutputFormat::Json => {
                             println!(
@@ -532,16 +568,24 @@ fn real_main() -> i32 {
                     return LQL_FAILURE_EXIT;
                 }
             };
-            match args.format {
+            if let Some(ref jsonl_path) = args.prompts_jsonl {
+                return lql_batch::run_prompts_jsonl(
+                    &mut session,
+                    args.statement.as_deref(),
+                    jsonl_path,
+                );
+            }
+            let stmt = args.statement.as_deref().unwrap_or_default();
+            match effective_format {
                 LqlOutputFormat::Text => {
-                    let outcome = larql_lql::run_batch_outcome_in(&mut session, &args.statement);
+                    let outcome = larql_lql::run_batch_outcome_in(&mut session, stmt);
                     for line in &outcome.lines {
                         println!("{line}");
                     }
                     return outcome.exit_code();
                 }
                 LqlOutputFormat::Json => {
-                    let outcome = larql_lql::run_batch_json_in(&mut session, &args.statement);
+                    let outcome = larql_lql::run_batch_json_in(&mut session, stmt);
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&outcome.to_json_value())

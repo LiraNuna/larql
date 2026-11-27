@@ -14,9 +14,32 @@ fn is_word(token: &Token, word: &str) -> bool {
     matches!(token, Token::Ident(s) if s.eq_ignore_ascii_case(word))
 }
 
+pub(crate) struct ParsedDlaBody {
+    pub prompt: String,
+    pub target_a: DlaTarget,
+    pub target_b: DlaTarget,
+    pub layers: Option<CaptureLayers>,
+    pub top_columns: Option<u32>,
+    pub top_heads: Option<u32>,
+    pub top_channels: Option<u32>,
+}
+
 impl Parser {
     pub(crate) fn parse_dla(&mut self) -> Result<Statement, ParseError> {
         self.expect_ident_eq(TOPIC)?;
+        let b = self.parse_dla_body()?;
+        Ok(Statement::Dla {
+            prompt: b.prompt,
+            target_a: b.target_a,
+            target_b: b.target_b,
+            layers: b.layers,
+            top_columns: b.top_columns,
+            top_heads: b.top_heads,
+            top_channels: b.top_channels,
+        })
+    }
+
+    pub(crate) fn parse_dla_body(&mut self) -> Result<ParsedDlaBody, ParseError> {
         let prompt = self.expect_string()?;
         if !self.check_keyword(Keyword::For) {
             return Err(self.expected_one_of("DLA \"<prompt>\"", &["FOR"], TOPIC));
@@ -88,7 +111,7 @@ impl Parser {
         }
 
         self.eat_semicolon();
-        Ok(Statement::Dla {
+        Ok(ParsedDlaBody {
             prompt,
             target_a,
             target_b,
