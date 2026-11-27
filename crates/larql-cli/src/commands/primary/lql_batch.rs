@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use larql_lql::ast::OverlayKind;
 use larql_lql::operations::{CaptureLayers, DlaTarget};
 use larql_lql::{run_batch_json_in, Session, EXIT_ERROR, EXIT_OK};
 use serde::Deserialize;
@@ -17,7 +18,14 @@ struct ProbeRecord {
     id: Option<String>,
     #[serde(default)]
     op: Option<String>,
-    prompt: String,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    scale: Option<f64>,
+    #[serde(default)]
+    statement: Option<String>,
     #[serde(default, rename = "for", alias = "target_a")]
     for_target: Option<Value>,
     #[serde(default, rename = "vs", alias = "target_b")]
@@ -146,31 +154,98 @@ pub fn run_prompts_jsonl(
     }
 }
 
-fn exec_probe(session: &Session, op: &str, rec: &ProbeRecord) -> Result<Value, String> {
+fn exec_probe(session: &mut Session, op: &str, rec: &ProbeRecord) -> Result<Value, String> {
     match op {
+        "overlay_safetensors" => {
+            let path = rec
+                .path
+                .as_deref()
+                .ok_or_else(|| "overlay_safetensors requires `path`".to_string())?;
+            let summary = session
+                .apply_external_overlay(&OverlayKind::Safetensors {
+                    path: path.to_string(),
+                })
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(&summary).map_err(|e| e.to_string())
+        }
+        "overlay_lora" => {
+            let path = rec
+                .path
+                .as_deref()
+                .ok_or_else(|| "overlay_lora requires `path`".to_string())?;
+            let summary = session
+                .apply_external_overlay(&OverlayKind::Lora {
+                    path: path.to_string(),
+                    scale: rec.scale,
+                })
+                .map_err(|e| e.to_string())?;
+            serde_json::to_value(&summary).map_err(|e| e.to_string())
+        }
+        "overlay_clear" => {
+            session
+                .apply_external_overlay(&OverlayKind::Clear)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "cleared": true }))
+        }
+        "load_soft_prompt" => {
+            let path = rec
+                .path
+                .as_deref()
+                .ok_or_else(|| "load_soft_prompt requires `path`".to_string())?;
+            let summary = session.load_soft_prompt(path).map_err(|e| e.to_string())?;
+            serde_json::to_value(&summary).map_err(|e| e.to_string())
+        }
+        "clear_soft_prompt" => {
+            let cleared = session.clear_soft_prompt().map_err(|e| e.to_string())?;
+            Ok(json!({ "cleared": cleared }))
+        }
+        "discard_weight_edits" => {
+            let stmt = larql_lql::parse("DISCARD WEIGHT EDITS;").map_err(|e| e.to_string())?;
+            let lines = session.execute(&stmt).map_err(|e| e.to_string())?;
+            Ok(json!({ "lines": lines }))
+        }
+        "lql" => {
+            let stmt_str = rec
+                .statement
+                .as_deref()
+                .ok_or_else(|| "`lql` op requires `statement`".to_string())?;
+            let out = run_batch_json_in(session, stmt_str);
+            if out.errors > 0 {
+                return Err(format!("inline LQL failed: {:?}", out.results));
+            }
+            Ok(json!({ "results": out.results }))
+        }
         "logit_diff" | "diff_logit_diff" => {
+            let prompt = rec
+                .prompt
+                .as_deref()
+                .ok_or_else(|| format!("`{op}` requires `prompt`"))?;
             let ta = parse_target(rec.for_target.as_ref(), "for")?;
             let tb = parse_target(rec.vs_target.as_ref(), "vs")?;
             if op == "diff_logit_diff" {
                 let report = session
-                    .diff_logit_diff(&rec.prompt, ta, tb)
+                    .diff_logit_diff(prompt, ta, tb)
                     .map_err(|e| e.to_string())?;
                 serde_json::to_value(&report).map_err(|e| e.to_string())
             } else {
                 let report = session
-                    .logit_diff(&rec.prompt, ta, tb)
+                    .logit_diff(prompt, ta, tb)
                     .map_err(|e| e.to_string())?;
                 serde_json::to_value(&report).map_err(|e| e.to_string())
             }
         }
         "dla" | "diff_dla" => {
+            let prompt = rec
+                .prompt
+                .as_deref()
+                .ok_or_else(|| format!("`{op}` requires `prompt`"))?;
             let ta = parse_target(rec.for_target.as_ref(), "for")?;
             let tb = parse_target(rec.vs_target.as_ref(), "vs")?;
             let layers = parse_layers(rec.layers.as_ref())?;
             if op == "diff_dla" {
                 let report = session
                     .diff_dla(
-                        &rec.prompt,
+                        prompt,
                         ta,
                         tb,
                         layers.as_ref(),
@@ -183,7 +258,7 @@ fn exec_probe(session: &Session, op: &str, rec: &ProbeRecord) -> Result<Value, S
             } else {
                 let report = session
                     .dla(
-                        &rec.prompt,
+                        prompt,
                         ta,
                         tb,
                         layers.as_ref(),
@@ -196,8 +271,12 @@ fn exec_probe(session: &Session, op: &str, rec: &ProbeRecord) -> Result<Value, S
             }
         }
         "infer" | "predict" => {
+            let prompt = rec
+                .prompt
+                .as_deref()
+                .ok_or_else(|| format!("`{op}` requires `prompt`"))?;
             let pred = session
-                .predict(&rec.prompt, rec.top.unwrap_or(5) as usize)
+                .predict(prompt, rec.top.unwrap_or(5) as usize)
                 .map_err(|e| e.to_string())?;
             let top_rows: Vec<Value> = pred
                 .top
@@ -218,13 +297,17 @@ fn exec_probe(session: &Session, op: &str, rec: &ProbeRecord) -> Result<Value, S
             }))
         }
         "generate" => {
+            let prompt = rec
+                .prompt
+                .as_deref()
+                .ok_or_else(|| format!("`{op}` requires `prompt`"))?;
             let gen = session
-                .generate(&rec.prompt, rec.max_tokens.unwrap_or(32) as usize)
+                .generate(prompt, rec.max_tokens.unwrap_or(32) as usize)
                 .map_err(|e| e.to_string())?;
             serde_json::to_value(&gen).map_err(|e| e.to_string())
         }
         other => Err(format!(
-            "unknown probe op `{other}` (expected dla, diff_dla, infer, or generate)"
+            "unknown probe op `{other}` (expected logit_diff, diff_logit_diff, dla, diff_dla, infer, generate, overlay_safetensors, overlay_lora, overlay_clear, load_soft_prompt, clear_soft_prompt, discard_weight_edits, or lql)"
         )),
     }
 }

@@ -8,7 +8,10 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::dla::compute_dla_on;
-use super::{prepared_operands_for_base, prepared_operands_for_session};
+use super::dla_math::{resolve_dla_layers, resolve_dla_target};
+use super::{
+    encode_raw_prompt, prepared_operands_for_base, prepared_operands_for_session, BaseDlaCacheKey,
+};
 use crate::ast::{CaptureLayers, DlaTarget};
 use crate::error::LqlError;
 use crate::executor::Session;
@@ -75,6 +78,7 @@ pub struct DlaDiffReport {
     pub delta_embedding_dla: f32,
     pub candidate_has_weight_edits: bool,
     pub candidate_has_soft_prompt: bool,
+    pub base_cached: bool,
     pub layer_deltas: Vec<DlaLayerDelta>,
     pub head_deltas: Vec<DlaHeadDelta>,
     pub column_deltas: Vec<DlaColumnDelta>,
@@ -102,27 +106,55 @@ impl Session {
             self.v3_text_program("DIFF DLA")?;
         let start = std::time::Instant::now();
 
-        // 1. Run Base (untouched weights, no soft prompt) using resident `cache.base`.
-        let (base_ops, base_key) = prepared_operands_for_base(runtime, prepared_cache)?;
-        let base_report = compute_dla_on(
-            runtime,
-            tokenizer,
-            bos_token,
-            prepared_cache,
-            &base_ops,
-            None,
-            Some(base_key),
-            None,
-            prompt,
-            &target_a,
-            &target_b,
-            layers,
-            top_columns,
-            top_heads,
-            top_channels,
-            false,
-            start,
-        )?;
+        // Build immutable Base DLA cache key so multi-checkpoint overlay sweeps reuse Base DLA!
+        let plan = runtime.plan();
+        let output_op = plan
+            .output
+            .as_ref()
+            .ok_or_else(|| LqlError::Execution("the component carries no output head".into()))?;
+        let vocab_size = output_op.projection.shape[0];
+        let prompt_ids_for_key = encode_raw_prompt(tokenizer, prompt, bos_token)?;
+        let (id_a, _) = resolve_dla_target(tokenizer, &target_a, "FOR", vocab_size)?;
+        let (id_b, _) = resolve_dla_target(tokenizer, &target_b, "VS", vocab_size)?;
+        let req_layers = resolve_dla_layers(layers, plan.layers.len())?;
+        let base_dla_key = BaseDlaCacheKey {
+            prompt_ids: prompt_ids_for_key,
+            token_id_a: id_a,
+            token_id_b: id_b,
+            layers: req_layers,
+            want_columns: top_columns.unwrap_or(0) > 0,
+            want_heads: top_heads.unwrap_or(0) > 0,
+            want_channels: top_channels.unwrap_or(0) > 0,
+        };
+
+        // 1. Run Base (untouched weights, no soft prompt) using resident `cache.base` + `base_dla_cache`.
+        let (base_report, base_cached) =
+            if let Some(cached) = prepared_cache.get_base_dla(&base_dla_key) {
+                (cached, true)
+            } else {
+                let (base_ops, base_key) = prepared_operands_for_base(runtime, prepared_cache)?;
+                let report = compute_dla_on(
+                    runtime,
+                    tokenizer,
+                    bos_token,
+                    prepared_cache,
+                    &base_ops,
+                    None,
+                    Some(base_key),
+                    None,
+                    prompt,
+                    &target_a,
+                    &target_b,
+                    layers,
+                    top_columns,
+                    top_heads,
+                    top_channels,
+                    false,
+                    start,
+                )?;
+                prepared_cache.put_base_dla(base_dla_key, report.clone());
+                (report, false)
+            };
 
         // 2. Run Candidate (active overlay/weight edits + active soft prompt).
         let (cand_ops, cand_overrides, cand_key) =
@@ -267,6 +299,7 @@ impl Session {
             delta_embedding_dla: cand_report.embedding_dla - base_report.embedding_dla,
             candidate_has_weight_edits,
             candidate_has_soft_prompt,
+            base_cached,
             layer_deltas,
             head_deltas,
             column_deltas,

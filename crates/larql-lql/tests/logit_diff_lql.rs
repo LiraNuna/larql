@@ -305,3 +305,89 @@ fn logit_diff_and_diff_logit_diff_match_dla_bit_for_bit() {
             < 1e-5
     );
 }
+
+#[test]
+fn base_hidden_and_dla_caches_survive_multiple_overlay_swaps_in_one_session() {
+    let (dir, vindex) = build_lfm3_fixture();
+    let sp1 = dir.path().join("sp1.npy");
+    let sp2 = dir.path().join("sp2.npy");
+    let raw1: Vec<u8> = lcg_values(2 * HIDDEN, 111)
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let raw2: Vec<u8> = lcg_values(2 * HIDDEN, 222)
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    std::fs::write(
+        &sp1,
+        npy_file_bytes(NpyDescr::F4, &[2, HIDDEN], &raw1).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        &sp2,
+        npy_file_bytes(NpyDescr::F4, &[2, HIDDEN], &raw2).unwrap(),
+    )
+    .unwrap();
+
+    let mut sess = Session::new();
+    sess.execute(&parse(&format!(r#"USE "{}";"#, q(&vindex))).unwrap())
+        .unwrap();
+
+    // First candidate: base miss -> populates base_hidden_cache & base_dla_cache
+    sess.load_soft_prompt(&q(&sp1)).unwrap();
+    let r1 = sess
+        .diff_logit_diff(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+        )
+        .unwrap();
+    assert!(!r1.base_cached, "first call must compute Base");
+    let d1 = sess
+        .diff_dla(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+            None,
+            Some(4),
+            Some(2),
+            None,
+        )
+        .unwrap();
+    assert!(!d1.base_cached);
+
+    // Swap soft prompt AND overlay clear -> Base caches MUST STAY HOT!
+    sess.load_soft_prompt(&q(&sp2)).unwrap();
+    sess.execute(&parse("OVERLAY CLEAR;").unwrap()).unwrap();
+    let r2 = sess
+        .diff_logit_diff(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+        )
+        .unwrap();
+    assert!(
+        r2.base_cached,
+        "second candidate must hit cached Base hidden state"
+    );
+    assert_eq!(r1.base_logit_diff.to_bits(), r2.base_logit_diff.to_bits());
+    assert_ne!(
+        r1.candidate_logit_diff.to_bits(),
+        r2.candidate_logit_diff.to_bits()
+    );
+
+    let d2 = sess
+        .diff_dla(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+            None,
+            Some(4),
+            Some(2),
+            None,
+        )
+        .unwrap();
+    assert!(d2.base_cached, "second DIFF DLA must hit cached Base DLA");
+    assert_eq!(d1.base_logit_diff.to_bits(), d2.base_logit_diff.to_bits());
+}

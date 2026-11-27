@@ -33,8 +33,25 @@ pub(crate) struct CachedPrepared {
     operands: Arc<PreparedOperands>,
 }
 
-/// Session-resident cache of lowered `PreparedOperands`, active soft-prompt embeddings, and
-/// shared-prefix continuation snapshots, shared across `INFER`, `GENERATE`, `CAPTURE`, and `DLA`.
+/// Cache key uniquely identifying a cached Base `DlaReport` (independent of any active overlay
+/// or soft prompt, since the bound Base container is immutable for the lifetime of `USE`).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BaseDlaCacheKey {
+    pub prompt_ids: Vec<u32>,
+    pub token_id_a: u32,
+    pub token_id_b: u32,
+    pub layers: Vec<usize>,
+    pub want_columns: bool,
+    pub want_heads: bool,
+    pub want_channels: bool,
+}
+
+const MAX_BASE_HIDDEN_ENTRIES: usize = 256;
+const MAX_BASE_DLA_ENTRIES: usize = 64;
+
+/// Session-resident cache of lowered `PreparedOperands`, active soft-prompt embeddings,
+/// persistent immutable Base hidden-state / DLA caches (surviving `OVERLAY` / `SOFT_PROMPT`
+/// swaps for fast multi-checkpoint screening), and shared-prefix continuation snapshots.
 ///
 /// Keeps the unpatched `base` image resident across live weight edits so staging or changing
 /// a patch reuses every untouched layer, the embedding table, and the output head via
@@ -44,17 +61,51 @@ pub(crate) struct PreparedCache {
     base: Mutex<Option<Arc<PreparedOperands>>>,
     patched: Mutex<Option<CachedPrepared>>,
     soft_prompt: Mutex<Option<Arc<super::SoftPromptState>>>,
+    base_hidden_cache: Mutex<std::collections::HashMap<Vec<u32>, Vec<f32>>>,
+    base_dla_cache: Mutex<std::collections::HashMap<BaseDlaCacheKey, super::DlaReport>>,
     prefix: super::prefix_cache::PrefixStateCache,
 }
 
 impl PreparedCache {
     /// Drop the active patched image and prefix snapshots while keeping the unpatched `base`
-    /// image resident for fast incremental re-preparation.
+    /// image and immutable Base hidden/DLA caches resident across overlay swaps.
     pub(crate) fn clear_patched(&self) {
         if let Ok(mut guard) = self.patched.lock() {
             *guard = None;
         }
         self.prefix.clear();
+    }
+
+    pub(crate) fn get_base_hidden(&self, prompt_ids: &[u32]) -> Option<Vec<f32>> {
+        self.base_hidden_cache
+            .lock()
+            .ok()
+            .and_then(|g| g.get(prompt_ids).cloned())
+    }
+
+    pub(crate) fn put_base_hidden(&self, prompt_ids: Vec<u32>, hidden: Vec<f32>) {
+        if let Ok(mut guard) = self.base_hidden_cache.lock() {
+            if guard.len() >= MAX_BASE_HIDDEN_ENTRIES && !guard.contains_key(&prompt_ids) {
+                guard.clear();
+            }
+            guard.insert(prompt_ids, hidden);
+        }
+    }
+
+    pub(crate) fn get_base_dla(&self, key: &BaseDlaCacheKey) -> Option<super::DlaReport> {
+        self.base_dla_cache
+            .lock()
+            .ok()
+            .and_then(|g| g.get(key).cloned())
+    }
+
+    pub(crate) fn put_base_dla(&self, key: BaseDlaCacheKey, report: super::DlaReport) {
+        if let Ok(mut guard) = self.base_dla_cache.lock() {
+            if guard.len() >= MAX_BASE_DLA_ENTRIES && !guard.contains_key(&key) {
+                guard.clear();
+            }
+            guard.insert(key, report);
+        }
     }
 
     pub(crate) fn set_soft_prompt(&self, state: super::SoftPromptState) {

@@ -91,14 +91,31 @@ impl Session {
         let executes_patched = overrides.is_some();
         let has_soft_prompt = soft_prompt.is_some();
 
-        let final_hidden = forward_final_hidden(
-            runtime,
-            &ops,
-            prepared_cache,
-            cache_key.as_ref(),
-            soft_prompt.as_deref(),
-            &prompt_ids,
-        )?;
+        let final_hidden = if !executes_patched && !has_soft_prompt {
+            if let Some(cached) = prepared_cache.get_base_hidden(&prompt_ids) {
+                cached
+            } else {
+                let h = forward_final_hidden(
+                    runtime,
+                    &ops,
+                    prepared_cache,
+                    cache_key.as_ref(),
+                    None,
+                    &prompt_ids,
+                )?;
+                prepared_cache.put_base_hidden(prompt_ids.clone(), h.clone());
+                h
+            }
+        } else {
+            forward_final_hidden(
+                runtime,
+                &ops,
+                prepared_cache,
+                cache_key.as_ref(),
+                soft_prompt.as_deref(),
+                &prompt_ids,
+            )?
+        };
         let source = match &overrides {
             Some(ov) => OperandSource::overlaid(runtime.store(), ov),
             None => runtime.operands(),
@@ -155,17 +172,21 @@ impl Session {
 
         let start = std::time::Instant::now();
         let (base_ops, base_key) = prepared_operands_for_base(runtime, prepared_cache)?;
-        let (base_hidden, base_cached) = (
-            forward_final_hidden(
-                runtime,
-                &base_ops,
-                prepared_cache,
-                Some(&base_key),
-                None,
-                &prompt_ids,
-            )?,
-            false,
-        );
+        let (base_hidden, base_cached) =
+            if let Some(cached) = prepared_cache.get_base_hidden(&prompt_ids) {
+                (cached, true)
+            } else {
+                let h = forward_final_hidden(
+                    runtime,
+                    &base_ops,
+                    prepared_cache,
+                    Some(&base_key),
+                    None,
+                    &prompt_ids,
+                )?;
+                prepared_cache.put_base_hidden(prompt_ids.clone(), h.clone());
+                (h, false)
+            };
         let (base_logit_a, base_logit_b) = project_two_logits(
             runtime,
             &base_ops,
