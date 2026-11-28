@@ -45,6 +45,10 @@ struct PatchedBf16 {
     /// Set when the bytes are handed to a loader. A replacement nothing read was not executed, whatever
     /// the run computed — see [`OperandOverrides::unread_patched`].
     read: AtomicBool,
+    /// When `true` (external checkpoint/LoRA overlays), `--representation-source auto` may lower
+    /// the matrix to Q8_0 at load just like base container matrices. Surgical VLP weight patches
+    /// keep this `false` so edited matrices always execute at exact BF16 without requantisation.
+    allow_auto_requantise: bool,
 }
 
 impl std::fmt::Debug for PatchedBf16 {
@@ -54,6 +58,7 @@ impl std::fmt::Debug for PatchedBf16 {
             .field("shape", &self.shape)
             .field("bytes", &self.bytes.len())
             .field("read", &self.read.load(Ordering::Relaxed))
+            .field("allow_auto_requantise", &self.allow_auto_requantise)
             .finish()
     }
 }
@@ -65,6 +70,7 @@ impl Clone for PatchedBf16 {
             shape: self.shape.clone(),
             bytes: Arc::clone(&self.bytes),
             read: AtomicBool::new(false),
+            allow_auto_requantise: self.allow_auto_requantise,
         }
     }
 }
@@ -204,6 +210,27 @@ impl OperandOverrides {
         operand: &OperandRef,
         bytes: Arc<[u8]>,
     ) -> Result<(), VindexError> {
+        self.insert_bf16(operand, bytes, false)
+    }
+
+    /// Replace `operand`'s stored bytes with an external checkpoint/LoRA overlay's BF16 bytes.
+    /// Unlike [`Self::replace_bf16`] (which holds surgical VLP edits at exact BF16), an external
+    /// overlay matrix may be lowered to Q8_0 under `--representation-source auto` (while still
+    /// executing at exact BF16 under `--representation-source stored`).
+    pub fn replace_bf16_overlay(
+        &mut self,
+        operand: &OperandRef,
+        bytes: Arc<[u8]>,
+    ) -> Result<(), VindexError> {
+        self.insert_bf16(operand, bytes, true)
+    }
+
+    fn insert_bf16(
+        &mut self,
+        operand: &OperandRef,
+        bytes: Arc<[u8]>,
+        allow_auto_requantise: bool,
+    ) -> Result<(), VindexError> {
         let expected = operand
             .shape
             .iter()
@@ -224,16 +251,26 @@ impl OperandOverrides {
                 shape: operand.shape.clone(),
                 bytes,
                 read: AtomicBool::new(false),
+                allow_auto_requantise,
             }),
         );
         Ok(())
     }
 
-    /// Whether `operand`'s stored bytes are replaced by a weight patch's BF16 bytes.
+    /// Whether `operand`'s stored bytes are replaced by a weight patch or external overlay's BF16 bytes.
     pub fn is_patched(&self, operand: &OperandRef) -> bool {
         matches!(
             self.replacements.get(&key(operand)),
             Some(Replacement::Bf16(_))
+        )
+    }
+
+    /// Whether `operand` carries a surgical BF16 weight patch that forbids `--representation-source auto`
+    /// requantisation (external checkpoint overlays return `false` so they lower to Q8_0 under `auto`).
+    pub fn forbids_requantise(&self, operand: &OperandRef) -> bool {
+        matches!(
+            self.replacements.get(&key(operand)),
+            Some(Replacement::Bf16(p)) if !p.allow_auto_requantise
         )
     }
 

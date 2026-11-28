@@ -481,11 +481,18 @@ impl<'a> OperandSource<'a> {
         self.overrides.is_some_and(|o| o.is_overridden(operand))
     }
 
-    /// Whether this operand's stored bytes are replaced by a weight patch's BF16 bytes. Such an operand keeps
-    /// a stored representation and is selected and loaded through it, but the bytes it executes are not the
-    /// container's: [`Self::load_raw`] hands back the replacement, never the segment.
+    /// Whether this operand's stored bytes are replaced by a weight patch or external overlay's BF16 bytes.
+    /// Such an operand keeps a stored representation and is selected and loaded through it, but the bytes it
+    /// executes are not the container's: [`Self::load_raw`] hands back the replacement, never the segment.
     pub fn is_patched(&self, operand: &OperandRef) -> bool {
         self.overrides.is_some_and(|o| o.is_patched(operand))
+    }
+
+    /// Whether this operand carries a surgical BF16 weight patch that forbids `--representation-source auto`
+    /// requantisation (external checkpoint overlays allow `auto` Q8_0 lowering while surgical edits stay BF16).
+    pub fn forbids_requantise(&self, operand: &OperandRef) -> bool {
+        self.overrides
+            .is_some_and(|o| o.forbids_requantise(operand))
     }
 
     /// The effective stored length, including whole-operand replacements.

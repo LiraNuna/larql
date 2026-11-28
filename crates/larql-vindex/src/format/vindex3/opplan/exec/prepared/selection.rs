@@ -59,7 +59,7 @@ pub(super) fn select_records<B: PlanBackend + ?Sized>(
         facts = facts.with_nvfp4_compiled(OperandStore::f16_request_binds_compiled_nvfp4(stored));
         facts = facts.with_requantise_forbidden(
             store.store().representation_source() == RepresentationSource::Stored
-                || store.is_patched(&planned.operand),
+                || store.forbids_requantise(&planned.operand),
         );
         let codec_provider = facts.registered.as_ref().map(|r| r.identity.clone());
         // What the ARTIFACT offers, priced per extent from the codec's own

@@ -138,6 +138,110 @@ fn auto_source_holds_patched_matrices_at_exact_bf16_without_requantising_them() 
 }
 
 #[test]
+fn auto_source_permits_q8_lowering_for_external_overlays_while_stored_holds_bf16() {
+    use larql_vindex::format::vindex3::opplan::exec::operands::OperandOverrides;
+    use larql_vindex::format::vindex3::opplan::exec::prepared::{ExecutionSlice, PreparedOperands};
+    use larql_vindex::format::vindex3::opplan::exec::production::ProductionBackend;
+    use larql_vindex::format::vindex3::opplan::exec::realization::RealizationForm;
+
+    let src = source_with_pack();
+    let bound_auto = bind_as(&src.container, None, RepresentationSource::Auto);
+    let backend = ProductionBackend::new();
+
+    // Find the first 2D matrix operand and clone its raw BF16 bytes into an external overlay.
+    let operand = bound_auto
+        .plan
+        .planned_operands()
+        .into_iter()
+        .find(|p| p.operand.tensor == TENSOR)
+        .expect("target tensor in plan")
+        .operand;
+    let raw = bound_auto.store.load_raw(&operand).expect("load raw bf16");
+    let bytes: std::sync::Arc<[u8]> = std::sync::Arc::from(raw.bytes);
+
+    let mut ext_overrides = OperandOverrides::new();
+    ext_overrides
+        .replace_bf16_overlay(&operand, std::sync::Arc::clone(&bytes))
+        .expect("replace_bf16_overlay accepts valid BF16 bytes");
+    assert!(ext_overrides.is_patched(&operand));
+    assert!(
+        !ext_overrides.forbids_requantise(&operand),
+        "external overlay must permit auto Q8 lowering"
+    );
+
+    let base_auto = PreparedOperands::load(
+        &bound_auto.plan,
+        &bound_auto.store,
+        &backend,
+        ExecutionSlice::Full,
+    )
+    .expect("base auto load");
+    let base_form = base_auto
+        .realizations()
+        .iter()
+        .find(|r| r.planned.operand.tensor == TENSOR)
+        .expect("base realization")
+        .selection
+        .realization
+        .form;
+
+    let ext_source = OperandSource::overlaid(&bound_auto.store, &ext_overrides);
+    let ext_auto = PreparedOperands::load_reusing(
+        &bound_auto.plan,
+        ext_source,
+        &backend,
+        ExecutionSlice::Full,
+        &base_auto,
+    )
+    .expect("external overlay auto load");
+    ext_overrides
+        .ensure_patched_read()
+        .expect("external overlay read through operand seam");
+    let ext_form = ext_auto
+        .realizations()
+        .iter()
+        .find(|r| r.planned.operand.tensor == TENSOR)
+        .expect("ext realization")
+        .selection
+        .realization
+        .form;
+    assert_eq!(
+        ext_form, base_form,
+        "under auto, external overlay must select the same realization form as base ({base_form:?}), not force FusedBf16"
+    );
+
+    // Under `--representation-source stored`, external overlays must still hold exact BF16.
+    let bound_stored = bind_as(&src.container, None, RepresentationSource::Stored);
+    let mut stored_overrides = OperandOverrides::new();
+    stored_overrides
+        .replace_bf16_overlay(&operand, bytes)
+        .expect("stored replace_bf16_overlay");
+    let stored_source = OperandSource::overlaid(&bound_stored.store, &stored_overrides);
+    let ext_stored = PreparedOperands::load(
+        &bound_stored.plan,
+        stored_source,
+        &backend,
+        ExecutionSlice::Full,
+    )
+    .expect("external overlay stored load");
+    stored_overrides
+        .ensure_patched_read()
+        .expect("stored external overlay read");
+    let stored_form = ext_stored
+        .realizations()
+        .iter()
+        .find(|r| r.planned.operand.tensor == TENSOR)
+        .expect("stored realization")
+        .selection
+        .realization
+        .form;
+    assert!(
+        !matches!(stored_form, RealizationForm::Requantise(_)),
+        "under stored, external overlay must never requantise: {stored_form:?}"
+    );
+}
+
+#[test]
 fn a_lowering_other_than_the_production_cpu_is_refused() {
     let src = source_with_pack();
     let bound = bind(&src.container);

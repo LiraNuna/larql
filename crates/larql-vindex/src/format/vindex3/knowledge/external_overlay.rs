@@ -488,7 +488,7 @@ pub fn load_safetensors_overlay(
             let sha256 = hex_digest(&bf16_bytes);
             let arc_bytes: Arc<[u8]> = Arc::from(bf16_bytes);
             for operand in op_refs {
-                overrides.replace_bf16(operand, Arc::clone(&arc_bytes))?;
+                overrides.replace_bf16_overlay(operand, Arc::clone(&arc_bytes))?;
             }
             tensors.push(LiveTensor {
                 object: obj_id.clone(),
@@ -692,7 +692,7 @@ pub fn load_lora_overlay(
         let sha256 = hex_digest(&bf16_bytes);
         let arc_bytes: Arc<[u8]> = Arc::from(bf16_bytes);
         for operand in op_refs {
-            overrides.replace_bf16(operand, Arc::clone(&arc_bytes))?;
+            overrides.replace_bf16_overlay(operand, Arc::clone(&arc_bytes))?;
         }
         tensors.push(LiveTensor {
             object: obj_id.clone(),
