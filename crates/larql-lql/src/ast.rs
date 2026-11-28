@@ -416,9 +416,12 @@ pub enum Statement {
         scale: f64,
     },
 
-    /// `PROJECT OUT {<tokA> | ID <idA>} - {<tokB> | ID <idB>} [ON | AT] LAYERS (...) [TARGET {W2 | O_PROJ | CONV_OUT | ALL}] [SCALE <f>];`
+    /// `PROJECT OUT [DELTA] {<tokA> | ID <idA>} - {<tokB> | ID <idB>} [ON | AT] LAYERS (...) [TARGET {W2 | O_PROJ | CONV_OUT | ALL}] [SCALE <f>];`
     /// Exact sandwich-norm-aware rank-1 nullspace projection composing over any active overlay.
+    /// With `DELTA`, projects only out of `ΔW = W_overlay - W_base` (`W_new = W_base + P_⊥ ΔW`),
+    /// preserving Base's own circuit while erasing checkpoint/LoRA drift.
     ProjectOut {
+        delta_only: bool,
         target_a: DlaTarget,
         target_b: DlaTarget,
         layers: CaptureLayers,

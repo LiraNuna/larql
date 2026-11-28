@@ -276,13 +276,21 @@ fn execute_json_statement(
                 }));
             }
             Statement::ProjectOut {
+                delta_only,
                 target_a,
                 target_b,
                 layers,
                 target,
                 scale,
             } => {
-                let summary = session.project_out(target_a, target_b, layers, *target, *scale)?;
+                let summary = session.project_out(
+                    *delta_only,
+                    target_a,
+                    target_b,
+                    layers,
+                    *target,
+                    *scale,
+                )?;
                 return Ok(json!({
                     "ok": true,
                     "statement": "PROJECT OUT",

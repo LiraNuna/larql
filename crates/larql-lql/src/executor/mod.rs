@@ -729,12 +729,13 @@ impl Session {
                 scale,
             } => self.exec_patch_unit(target, *layer, *scale),
             Statement::ProjectOut {
+                delta_only,
                 target_a,
                 target_b,
                 layers,
                 target,
                 scale,
-            } => self.exec_project_out(target_a, target_b, layers, *target, *scale),
+            } => self.exec_project_out(*delta_only, target_a, target_b, layers, *target, *scale),
         }
     }
 

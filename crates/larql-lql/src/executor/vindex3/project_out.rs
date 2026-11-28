@@ -27,9 +27,10 @@ fn refused_project(e: impl std::fmt::Display) -> LqlError {
     LqlError::Execution(format!("PROJECT OUT refused: {e}"))
 }
 
-/// Structured summary returned by `PROJECT OUT`.
+/// Structured summary returned by `PROJECT OUT` and `PROJECT OUT DELTA`.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectOutSummary {
+    pub delta_only: bool,
     pub target_a: String,
     pub token_id_a: u32,
     pub target_b: String,
@@ -37,13 +38,15 @@ pub struct ProjectOutSummary {
     pub scale: f64,
     pub target_scope: &'static str,
     pub projected_tensors: Vec<String>,
+    pub skipped_unchanged_tensors: Vec<String>,
     pub total_changed_elements: usize,
 }
 
 impl Session {
-    /// Typed operation behind `PROJECT OUT <A> - <B> ON LAYERS (...) [TARGET ...] [SCALE <f>];`.
+    /// Typed operation behind `PROJECT OUT [DELTA] <A> - <B> ON LAYERS (...) [TARGET ...] [SCALE <f>];`.
     pub fn project_out(
         &mut self,
+        delta_only: bool,
         target_a: &DlaTarget,
         target_b: &DlaTarget,
         layers: &CaptureLayers,
@@ -65,7 +68,7 @@ impl Session {
             b_bits: Vec<u64>,
         }
 
-        let (path, label_a, id_a, label_b, id_b, planned) = {
+        let (path, label_a, id_a, label_b, id_b, planned, skipped_unchanged_tensors) = {
             let (path, runtime, tokenizer, overlay) = match &self.backend {
                 Backend::Vindex3 {
                     path,
@@ -117,9 +120,16 @@ impl Session {
 
             // Read effective output rows & norms (honoring any mounted OVERLAY SAFETENSORS/LORA).
             let overrides = execution_overrides(runtime, overlay)?;
+            if delta_only && overrides.is_none() {
+                return Err(refused_project(
+                    "PROJECT OUT DELTA requires an active OVERLAY SAFETENSORS or OVERLAY LORA \
+                     (ΔW = W_overlay - W_base is zero without an overlay)",
+                ));
+            }
+            let base_source = runtime.operands();
             let source = match &overrides {
                 Some(ov) => OperandSource::overlaid(runtime.store(), ov),
-                None => runtime.operands(),
+                None => base_source,
             };
             let (row_a, row_b) = load_two_rows(
                 &source,
@@ -147,6 +157,7 @@ impl Session {
             let want_conv = matches!(target, ProjectOutTarget::ConvOut | ProjectOutTarget::All);
 
             let mut planned = Vec::new();
+            let mut skipped_unchanged = Vec::new();
             let mut plan_matrix = |operand: &OperandRef,
                                    norm: Option<&NormOp>,
                                    label: &str|
@@ -157,7 +168,13 @@ impl Session {
                     None => u_res.clone(),
                 };
                 let u_hat = normalize_unit(&u_y)?;
-                let (a_bits, b_bits) = compute_rank1_factors(&source, operand, &u_hat, scale)?;
+                let base_opt = delta_only.then_some(&base_source);
+                let Some((a_bits, b_bits)) =
+                    compute_rank1_factors(&source, base_opt, operand, &u_hat, scale)?
+                else {
+                    skipped_unchanged.push(operand.tensor.clone());
+                    return Ok(());
+                };
                 planned.push(PlannedProjection {
                     tensor: operand.tensor.clone(),
                     cols: operand.shape[1],
@@ -199,14 +216,34 @@ impl Session {
             }
 
             if planned.is_empty() {
+                if delta_only && !skipped_unchanged.is_empty() {
+                    return Err(refused_project(format!(
+                        "none of the {} targeted tensor(s) had a non-zero delta ΔW = W_overlay - W_base \
+                         along the projected direction",
+                        skipped_unchanged.len()
+                    )));
+                }
                 return Err(refused_project(
                     "no matching projection matrices found on the requested layer(s)",
                 ));
             }
-            (path.clone(), label_a, id_a, label_b, id_b, planned)
+            (
+                path.clone(),
+                label_a,
+                id_a,
+                label_b,
+                id_b,
+                planned,
+                skipped_unchanged,
+            )
         };
 
-        let origin = format!("project_out:{label_a}[{id_a}]-{label_b}[{id_b}]");
+        let mode_tag = if delta_only {
+            "project_out_delta"
+        } else {
+            "project_out"
+        };
+        let origin = format!("{mode_tag}:{label_a}[{id_a}]-{label_b}[{id_b}]");
         let mut ops_to_stage = Vec::with_capacity(planned.len());
         let mut total_changed_elements = 0usize;
         for item in planned {
@@ -244,6 +281,7 @@ impl Session {
         let _ = self.refresh_live_weights();
 
         Ok(ProjectOutSummary {
+            delta_only,
             target_a: label_a,
             token_id_a: id_a,
             target_b: label_b,
@@ -251,22 +289,29 @@ impl Session {
             scale,
             target_scope: target.label(),
             projected_tensors,
+            skipped_unchanged_tensors,
             total_changed_elements,
         })
     }
 
     pub(crate) fn exec_project_out(
         &mut self,
+        delta_only: bool,
         target_a: &DlaTarget,
         target_b: &DlaTarget,
         layers: &CaptureLayers,
         target: ProjectOutTarget,
         scale: f64,
     ) -> Result<Vec<String>, LqlError> {
-        let s = self.project_out(target_a, target_b, layers, target, scale)?;
+        let s = self.project_out(delta_only, target_a, target_b, layers, target, scale)?;
+        let mode = if s.delta_only {
+            "delta (W_base + P_perp * ΔW)"
+        } else {
+            "full (P_perp * W)"
+        };
         let mut out = vec![
             format!(
-                "Projected out rank-1 direction {:?} [id {}] - {:?} [id {}] (target={}, scale={}) across {} tensor(s):",
+                "Projected out rank-1 direction {:?} [id {}] - {:?} [id {}] (mode={mode}, target={}, scale={}) across {} tensor(s):",
                 s.target_a,
                 s.token_id_a,
                 s.target_b,
@@ -275,7 +320,11 @@ impl Session {
                 s.scale,
                 s.projected_tensors.len()
             ),
-            format!("  changed_elements: {} (composed over any active OVERLAY)", s.total_changed_elements),
+            format!(
+                "  changed_elements: {} (skipped_unchanged={})",
+                s.total_changed_elements,
+                s.skipped_unchanged_tensors.len()
+            ),
         ];
         for t in s.projected_tensors.iter().take(12) {
             out.push(format!("  projected:        {t}"));
@@ -325,14 +374,20 @@ fn normalize_unit(u: &[f64]) -> Result<Vec<f64>, LqlError> {
     Ok(u.iter().map(|&v| v / norm).collect())
 }
 
-/// Compute exact rank-1 factors `(a, b)` such that `W + a * b^T = W - scale * u_hat * (u_hat^T W)`
-/// over the currently active effective weight matrix `W` (including any mounted external overlay).
+type Rank1Factors = (Vec<u64>, Vec<u64>);
+
+/// Compute exact rank-1 factors `(a, b)` such that:
+/// - Full mode (`base_source = None`): `W_eff + a * b^T = W_eff - scale * u_hat * (u_hat^T W_eff)`.
+/// - Delta mode (`base_source = Some(base)`): `W_eff + a * b^T = W_base + ΔW - scale * u_hat * (u_hat^T ΔW)`
+///   where `ΔW = W_eff - W_base`. Returns `Ok(None)` when `u_hat^T ΔW` is identically zero
+///   (e.g. a layer untouched by the overlay).
 fn compute_rank1_factors(
     source: &OperandSource<'_>,
+    base_source: Option<&OperandSource<'_>>,
     operand: &OperandRef,
     u_hat: &[f64],
     scale: f64,
-) -> Result<(Vec<u64>, Vec<u64>), LqlError> {
+) -> Result<Option<Rank1Factors>, LqlError> {
     if operand.shape.len() != 2 {
         return Err(refused_project(format!(
             "tensor `{}` has rank {}, expected 2D matrix",
@@ -353,13 +408,30 @@ fn compute_rank1_factors(
         .load(operand)
         .map_err(|e| refused_project(format!("read `{}`: {e}", operand.tensor)))?;
     let mut b = vec![0.0f64; cols];
-    for (r, &ur) in u_hat.iter().enumerate() {
-        let row = &w[r * cols..(r + 1) * cols];
-        for (c, &wrc) in row.iter().enumerate() {
-            b[c] += ur * (wrc as f64);
+    if let Some(base) = base_source {
+        let w_base = base
+            .load(operand)
+            .map_err(|e| refused_project(format!("read base `{}`: {e}", operand.tensor)))?;
+        for (r, &ur) in u_hat.iter().enumerate() {
+            let eff_row = &w[r * cols..(r + 1) * cols];
+            let base_row = &w_base[r * cols..(r + 1) * cols];
+            for (c, (&we, &wb)) in eff_row.iter().zip(base_row.iter()).enumerate() {
+                b[c] += ur * ((we as f64) - (wb as f64));
+            }
+        }
+        let max_b = b.iter().fold(0.0f64, |acc, &v| acc.max(v.abs()));
+        if max_b < 1e-12 {
+            return Ok(None);
+        }
+    } else {
+        for (r, &ur) in u_hat.iter().enumerate() {
+            let row = &w[r * cols..(r + 1) * cols];
+            for (c, &wrc) in row.iter().enumerate() {
+                b[c] += ur * (wrc as f64);
+            }
         }
     }
     let a_bits: Vec<u64> = u_hat.iter().map(|&ur| (-scale * ur).to_bits()).collect();
     let b_bits: Vec<u64> = b.iter().map(|&bc| bc.to_bits()).collect();
-    Ok((a_bits, b_bits))
+    Ok(Some((a_bits, b_bits)))
 }

@@ -221,16 +221,18 @@ fn parses_project_out_forms() {
     assert!(matches!(
         s1,
         Statement::ProjectOut {
+            delta_only: false,
             target: ProjectOutTarget::W2,
             scale,
             ..
         } if (scale - 1.0).abs() < 1e-12
     ));
 
-    let s2 = parse(r#"PROJECT OUT ID 3 - ID 1 AT LAYER 1 TARGET ALL SCALE 0.75;"#).unwrap();
+    let s2 = parse(r#"PROJECT OUT DELTA ID 3 - ID 1 AT LAYER 1 TARGET ALL SCALE 0.75;"#).unwrap();
     assert!(matches!(
         s2,
         Statement::ProjectOut {
+            delta_only: true,
             target: ProjectOutTarget::All,
             scale,
             ..
@@ -328,6 +330,152 @@ fn project_out_zeroes_sandwich_norm_ffn_dla_and_composes_over_overlay_and_export
     )
     .unwrap();
     let reenc = dir.path().join("reenc_projected.vindex3");
+    encode_checkpoint(&exported_hf, &reenc).unwrap();
+
+    let mut fresh = Session::new();
+    fresh
+        .execute(&parse(&format!(r#"USE "{}";"#, q(&reenc))).unwrap())
+        .unwrap();
+    let reenc_ld = fresh
+        .logit_diff(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+        )
+        .unwrap();
+    assert_eq!(live_ld.logit_diff.to_bits(), reenc_ld.logit_diff.to_bits());
+}
+
+#[test]
+fn project_out_delta_erases_overlay_drift_while_preserving_base_circuit() {
+    let dir = tempfile::tempdir().unwrap();
+    let base_ckpt = dir.path().join("base_ckpt");
+    let cand_ckpt = dir.path().join("cand_ckpt");
+    std::fs::create_dir_all(&base_ckpt).unwrap();
+    std::fs::create_dir_all(&cand_ckpt).unwrap();
+    write_config_and_tok(&base_ckpt);
+    write_config_and_tok(&cand_ckpt);
+    write_shard(&base_ckpt, 0.0);
+    // Perturb ONLY layer 1 w2 (`delta = 0.08`), leaving layer 0 byte-identical to Base!
+    write_shard(&cand_ckpt, 0.08);
+
+    let base_vindex = dir.path().join("base.vindex3");
+    encode_checkpoint(&base_ckpt, &base_vindex).unwrap();
+
+    let mut sess = Session::new();
+    sess.execute(&parse(&format!(r#"USE "{}";"#, q(&base_vindex))).unwrap())
+        .unwrap();
+
+    // Without an active overlay, PROJECT OUT DELTA must refuse fail-closed.
+    let err = sess
+        .execute(&parse(r#"PROJECT OUT DELTA "gamma" - "alpha" ON LAYER 1;"#).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("OVERLAY"),
+        "expected fail-closed refusal without overlay, got: {err}"
+    );
+
+    let base_dla = sess
+        .dla(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let base_l1_ffn = base_dla.layers[1].ffn_dla;
+    assert!(
+        base_l1_ffn.abs() > 1e-2,
+        "base L1 FFN DLA should be nontrivial so we can verify preservation: {base_l1_ffn}"
+    );
+
+    // Mount candidate overlay and verify its ΔW shifted L1 FFN DLA away from Base.
+    sess.execute(&parse(&format!(r#"OVERLAY SAFETENSORS "{}";"#, q(&cand_ckpt))).unwrap())
+        .unwrap();
+    let cand_dla = sess
+        .dla(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let cand_l1_ffn = cand_dla.layers[1].ffn_dla;
+    let drift_before = (cand_l1_ffn - base_l1_ffn).abs();
+    assert!(
+        drift_before > 1e-2,
+        "overlay should create measurable L1 FFN drift (base={base_l1_ffn}, cand={cand_l1_ffn})"
+    );
+
+    // Project out ONLY ΔW across layers (0, 1): L0 must be skipped as unchanged, L1 projected.
+    let summary = sess
+        .project_out(
+            true,
+            &DlaTarget::Text("gamma".into()),
+            &DlaTarget::Text("alpha".into()),
+            &larql_lql::operations::CaptureLayers::Many(vec![0, 1]),
+            ProjectOutTarget::W2,
+            1.0,
+        )
+        .unwrap();
+    assert!(summary.delta_only);
+    assert_eq!(summary.projected_tensors, vec!["1.feed_forward.w2.weight"]);
+    assert_eq!(
+        summary.skipped_unchanged_tensors,
+        vec!["0.feed_forward.w2.weight"]
+    );
+
+    let after_dla = sess
+        .dla(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let after_l1_ffn = after_dla.layers[1].ffn_dla;
+    let drift_after = (after_l1_ffn - base_l1_ffn).abs();
+    assert!(
+        drift_after < drift_before * 0.25,
+        "PROJECT OUT DELTA should erase most of ΔW drift while restoring Base L1 FFN \
+         (base={base_l1_ffn}, cand={cand_l1_ffn}, after={after_l1_ffn})"
+    );
+    // Crucial: Base's own circuit is preserved (NOT zeroed as full PROJECT OUT would do)!
+    assert!(
+        after_l1_ffn.signum() == base_l1_ffn.signum()
+            && after_l1_ffn.abs() > base_l1_ffn.abs() * 0.85,
+        "Base L1 FFN signal must stay intact (base={base_l1_ffn}, after={after_l1_ffn})"
+    );
+
+    // Export composed result to HF safetensors and verify bit-exact parity.
+    let live_ld = sess
+        .logit_diff(
+            "alpha beta",
+            DlaTarget::Text("gamma".into()),
+            DlaTarget::Text("alpha".into()),
+        )
+        .unwrap();
+    let exported_hf = dir.path().join("exported_delta_proj");
+    sess.execute(
+        &parse(&format!(
+            r#"EXPORT SAFETENSORS "{}" FROM BASE "{}";"#,
+            q(&exported_hf),
+            q(&cand_ckpt)
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let reenc = dir.path().join("reenc_delta_proj.vindex3");
     encode_checkpoint(&exported_hf, &reenc).unwrap();
 
     let mut fresh = Session::new();

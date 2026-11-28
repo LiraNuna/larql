@@ -161,6 +161,12 @@ impl Parser {
             return Err(self.expected_after("PROJECT"));
         }
         self.advance(); // consume OUT
+        let delta_only = if is_word(&self.peek(), "DELTA") {
+            self.advance();
+            true
+        } else {
+            false
+        };
         let target_a = self.parse_dla_target("PROJECT OUT")?;
         if matches!(self.peek(), Token::Dash) || is_word(&self.peek(), "VS") {
             self.advance();
@@ -260,6 +266,7 @@ impl Parser {
         }
         self.eat_semicolon();
         Ok(Statement::ProjectOut {
+            delta_only,
             target_a,
             target_b,
             layers,

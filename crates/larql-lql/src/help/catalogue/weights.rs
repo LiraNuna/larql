@@ -253,7 +253,7 @@ pub(super) static PROJECT_OUT: StatementHelp = StatementHelp {
     aliases: &["NULLSPACE PROJECTION"],
     group: HelpGroup::Weights,
     syntax: &[
-        "PROJECT OUT {\"<tok_a>\" | ID <id_a>} - {\"<tok_b>\" | ID <id_b>} [ON | AT] LAYERS (<n>, <lo>..<hi>, ...) [TARGET {W2 | O_PROJ | CONV_OUT | ALL}] [SCALE <number>];",
+        "PROJECT OUT [DELTA] {\"<tok_a>\" | ID <id_a>} - {\"<tok_b>\" | ID <id_b>} [ON | AT] LAYERS (<n>, <lo>..<hi>, ...) [TARGET {W2 | O_PROJ | CONV_OUT | ALL}] [SCALE <number>];",
     ],
     does: &[
         "Stages an exact sandwich-norm-aware rank-1 nullspace projection removing the logit",
@@ -261,12 +261,14 @@ pub(super) static PROJECT_OUT: StatementHelp = StatementHelp {
         "layers: W <- W - scale * u_hat * (u_hat^T W) where u_hat folds final_norm and each",
         "sublayer's post_ffn_norm / post_attention_norm weight (automatically preserving zero-gamma",
         "RMS ballast channels with zero blowup).",
-        "Defaults to TARGET W2 and SCALE 1.0. Composes directly over any mounted OVERLAY",
-        "SAFETENSORS / OVERLAY LORA and exports cleanly via EXPORT SAFETENSORS.",
+        "With DELTA, projects only out of ΔW = W_overlay - W_base (W_new = W_base + P_perp ΔW),",
+        "preserving Base's own circuit while surgically erasing checkpoint/LoRA drift and skipping",
+        "untouched layers. Defaults to TARGET W2 and SCALE 1.0. Composes directly over any mounted",
+        "OVERLAY SAFETENSORS / OVERLAY LORA and exports cleanly via EXPORT SAFETENSORS.",
     ],
     examples: &[
         "PROJECT OUT \" Paris\" - \" London\" ON LAYERS (20..24);",
-        "PROJECT OUT ID 4741 - ID 4595 ON LAYERS (20, 22, 23) TARGET W2 SCALE 1.0;",
+        "PROJECT OUT DELTA ID 4741 - ID 4595 ON LAYERS (20, 22, 23) TARGET W2 SCALE 1.0;",
     ],
     needs: &[Need::Vindex3, Need::Tokenizer],
     effect: STAGED_EFFECT,
