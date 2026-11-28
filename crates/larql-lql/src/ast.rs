@@ -606,11 +606,13 @@ pub enum OverlayKind {
     Clear,
 }
 
-/// Target token specification for `DLA`: either a single-token text literal or an explicit vocabulary ID.
+/// Target token specification for `DLA` and `LOGIT DIFF`: a single-token text literal, an explicit
+/// vocabulary ID, or (`LOGIT DIFF` / `DIFF LOGIT DIFF` only) `MAX_OTHER [EXCEPT (...)]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DlaTarget {
     Text(String),
     Id(u32),
+    MaxOther { except: Vec<DlaTarget> },
 }
 
 impl From<&str> for DlaTarget {

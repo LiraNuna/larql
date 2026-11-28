@@ -255,13 +255,15 @@ pub(super) static LOGIT_DIFF: StatementHelp = StatementHelp {
     aliases: &["DIFF LOGIT DIFF"],
     group: HelpGroup::Run,
     syntax: &[
-        "LOGIT DIFF \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>};",
-        "DIFF LOGIT DIFF \"<prompt>\" FOR {\"<token_a>\" | ID <id_a>} VS {\"<token_b>\" | ID <id_b>};",
+        "LOGIT DIFF \"<prompt>\" FOR {\"<token_a>\" | ID <id_a> | MAX_OTHER [EXCEPT (...)]} VS {\"<token_b>\" | ID <id_b> | MAX_OTHER [EXCEPT (...)]};",
+        "DIFF LOGIT DIFF \"<prompt>\" FOR {\"<token_a>\" | ID <id_a> | MAX_OTHER [EXCEPT (...)]} VS {\"<token_b>\" | ID <id_b> | MAX_OTHER [EXCEPT (...)]};",
     ],
     does: &[
         "Fast forward-only computation of logit(token_a) - logit(token_b) at the prompt's final",
-        "position. Skips all per-layer taps, weight dequantization, and the full vocabulary",
-        "projection — evaluating ONLY the 2 target vocabulary rows with bit-exact parity to DLA.",
+        "position. For concrete token pairs, skips all per-layer taps, weight dequantization, and",
+        "the full vocabulary projection — evaluating ONLY the 2 target vocabulary rows with",
+        "bit-exact parity to DLA. Passing MAX_OTHER [EXCEPT (\"<t1>\", ID <n>, ...)] on either FOR",
+        "or VS contrasts against the highest-logit non-excluded vocabulary token.",
         "DIFF LOGIT DIFF compares the active session state (OVERLAY / SOFT_PROMPT / live edits)",
         "against the untouched bound Base container, caching Base final hidden states across",
         "subsequent overlays for rapid multi-checkpoint screening.",
@@ -269,6 +271,7 @@ pub(super) static LOGIT_DIFF: StatementHelp = StatementHelp {
     examples: &[
         "LOGIT DIFF \"The capital of France is\" FOR \" Paris\" VS \" London\";",
         "LOGIT DIFF \"The capital of France is\" FOR ID 4741 VS ID 4595;",
+        "LOGIT DIFF \"The capital of France is\" FOR MAX_OTHER EXCEPT (\" London\") VS \" London\";",
     ],
     needs: &[Need::Vindex3, Need::Tokenizer],
     effect: &[

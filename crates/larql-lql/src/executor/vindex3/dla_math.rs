@@ -43,6 +43,10 @@ pub(super) fn resolve_dla_target(
     vocab_size: usize,
 ) -> Result<(u32, String), LqlError> {
     match target {
+        DlaTarget::MaxOther { .. } => Err(LqlError::Execution(format!(
+            "{clause} MAX_OTHER is only supported in LOGIT DIFF / DIFF LOGIT DIFF \
+             (use a concrete \"<token>\" or ID <n> for DLA / PROJECT OUT)"
+        ))),
         DlaTarget::Id(id) => {
             if (*id as usize) >= vocab_size {
                 return Err(LqlError::Execution(format!(

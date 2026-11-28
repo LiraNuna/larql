@@ -391,3 +391,129 @@ fn base_hidden_and_dla_caches_survive_multiple_overlay_swaps_in_one_session() {
     assert!(d2.base_cached, "second DIFF DLA must hit cached Base DLA");
     assert_eq!(d1.base_logit_diff.to_bits(), d2.base_logit_diff.to_bits());
 }
+
+#[test]
+fn logit_diff_and_diff_logit_diff_support_max_other_and_except() {
+    let s1 = parse(r#"LOGIT DIFF "alpha beta" FOR MAX_OTHER VS "alpha";"#).unwrap();
+    assert!(matches!(
+        s1,
+        Statement::LogitDiff {
+            target_a: DlaTarget::MaxOther { ref except },
+            target_b: DlaTarget::Text(ref b),
+            ..
+        } if except.is_empty() && b == "alpha"
+    ));
+    let s2 =
+        parse(r#"DIFF LOGIT DIFF "alpha beta" FOR MAX_OTHER EXCEPT ("alpha", ID 2) VS "beta";"#)
+            .unwrap();
+    assert!(matches!(
+        s2,
+        Statement::DiffLogitDiff {
+            target_a: DlaTarget::MaxOther { ref except },
+            ..
+        } if except.len() == 2
+    ));
+    let s3 = parse(r#"LOGIT DIFF "alpha beta" FOR "gamma" VS MAX_OTHER;"#).unwrap();
+    assert!(matches!(
+        s3,
+        Statement::LogitDiff {
+            target_b: DlaTarget::MaxOther { ref except },
+            ..
+        } if except.is_empty()
+    ));
+
+    let (dir, vindex) = build_lfm3_fixture();
+    let sp_path = dir.path().join("sp_mo.npy");
+    let sp_vals = lcg_values(2 * HIDDEN, 777);
+    let raw_f32: Vec<u8> = sp_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+    std::fs::write(
+        &sp_path,
+        npy_file_bytes(NpyDescr::F4, &[2, HIDDEN], &raw_f32).unwrap(),
+    )
+    .unwrap();
+
+    let mut sess = Session::new();
+    sess.execute(&parse(&format!(r#"USE "{}";"#, q(&vindex))).unwrap())
+        .unwrap();
+
+    // Both sides MAX_OTHER must refuse fail-closed.
+    assert!(sess
+        .logit_diff(
+            "alpha beta",
+            DlaTarget::MaxOther { except: vec![] },
+            DlaTarget::MaxOther { except: vec![] },
+        )
+        .is_err());
+
+    // Reference full vocabulary ranking via predict().
+    let pred = sess.predict("alpha beta", VOCAB).unwrap();
+    let top1_id = pred.top[0].token_id;
+    let vs_id = if top1_id == 1 { 2u32 } else { 1u32 };
+
+    // MAX_OTHER vs vs_id must pick top1_id (unless vs_id == top1_id, avoided above).
+    let r_mo = sess
+        .logit_diff(
+            "alpha beta",
+            DlaTarget::MaxOther { except: vec![] },
+            DlaTarget::Id(vs_id),
+        )
+        .unwrap();
+    assert_eq!(r_mo.token_id_a, top1_id);
+    assert_eq!(r_mo.token_id_b, vs_id);
+    let r_exact = sess
+        .logit_diff("alpha beta", DlaTarget::Id(top1_id), DlaTarget::Id(vs_id))
+        .unwrap();
+    assert!((r_mo.logit_diff - r_exact.logit_diff).abs() < 1e-5);
+
+    // Excluding top1_id must fall back to top2_id (or next if top2_id == vs_id).
+    let expected_second = pred
+        .top
+        .iter()
+        .find(|p| p.token_id != top1_id && p.token_id != vs_id)
+        .unwrap()
+        .token_id;
+    let r_ex = sess
+        .logit_diff(
+            "alpha beta",
+            DlaTarget::MaxOther {
+                except: vec![DlaTarget::Id(top1_id)],
+            },
+            DlaTarget::Id(vs_id),
+        )
+        .unwrap();
+    assert_eq!(r_ex.token_id_a, expected_second);
+    assert!(r_ex.logit_a <= r_mo.logit_a + 1e-5);
+
+    // Fixed FOR vs MAX_OTHER (e.g. BFCL `<tool_call> vs MAX_OTHER` margin).
+    let r_vs_mo = sess
+        .logit_diff(
+            "alpha beta",
+            DlaTarget::Id(vs_id),
+            DlaTarget::MaxOther { except: vec![] },
+        )
+        .unwrap();
+    assert_eq!(r_vs_mo.token_id_b, top1_id);
+    assert!((r_vs_mo.logit_diff + r_mo.logit_diff).abs() < 1e-5);
+
+    // DIFF LOGIT DIFF with MAX_OTHER over soft prompt populates base_token_id_a and hits base cache!
+    sess.load_soft_prompt(&q(&sp_path)).unwrap();
+    let r_diff = sess
+        .diff_logit_diff(
+            "alpha beta",
+            DlaTarget::MaxOther {
+                except: vec![DlaTarget::Id(top1_id)],
+            },
+            DlaTarget::Id(vs_id),
+        )
+        .unwrap();
+    assert!(
+        r_diff.base_cached,
+        "Base hidden state was cached by earlier call"
+    );
+    assert_eq!(r_diff.base_token_id_a, Some(expected_second));
+    assert!((r_diff.base_logit_diff - r_ex.logit_diff).abs() < 1e-5);
+    assert!(
+        ((r_diff.candidate_logit_diff - r_diff.base_logit_diff) - r_diff.delta_logit_diff).abs()
+            < 1e-5
+    );
+}

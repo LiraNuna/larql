@@ -314,15 +314,47 @@ fn exec_probe(session: &mut Session, op: &str, rec: &ProbeRecord) -> Result<Valu
 
 fn parse_target(val: Option<&Value>, field: &str) -> Result<DlaTarget, String> {
     let v = val.ok_or_else(|| format!("missing required `{field}` target field"))?;
+    parse_target_value(v, field, true)
+}
+
+fn parse_target_value(v: &Value, field: &str, allow_max_other: bool) -> Result<DlaTarget, String> {
     if let Some(id) = v.as_u64() {
         let id = u32::try_from(id).map_err(|_| format!("`{field}` token id {id} overflows u32"))?;
         return Ok(DlaTarget::Id(id));
     }
     if let Some(s) = v.as_str() {
+        if allow_max_other && s.eq_ignore_ascii_case("MAX_OTHER") {
+            return Ok(DlaTarget::MaxOther { except: Vec::new() });
+        }
         return Ok(DlaTarget::Text(s.to_string()));
     }
+    if allow_max_other {
+        if let Some(obj) = v.as_object() {
+            if let Some(mo) = obj.get("max_other") {
+                let items: &[Value] = if let Some(arr) = mo.as_array() {
+                    arr.as_slice()
+                } else if let Some(inner) = mo.as_object().and_then(|o| o.get("except")) {
+                    inner
+                        .as_array()
+                        .ok_or_else(|| format!("`{field}.max_other.except` must be an array"))?
+                        .as_slice()
+                } else if mo.is_null() || mo.as_bool() == Some(true) {
+                    &[]
+                } else {
+                    return Err(format!(
+                        "`{field}.max_other` must be true, an array, or {{\"except\": [...]}}"
+                    ));
+                };
+                let mut except = Vec::with_capacity(items.len());
+                for item in items {
+                    except.push(parse_target_value(item, field, false)?);
+                }
+                return Ok(DlaTarget::MaxOther { except });
+            }
+        }
+    }
     Err(format!(
-        "`{field}` must be a token string or unsigned integer token ID, got {v}"
+        "`{field}` must be a token string, unsigned integer token ID, or MAX_OTHER spec, got {v}"
     ))
 }
 

@@ -145,12 +145,12 @@ impl Parser {
             return Err(self.expected_one_of(&format!("{topic} \"<prompt>\""), &["FOR"], topic));
         }
         self.advance();
-        let target_a = self.parse_dla_target("FOR")?;
+        let target_a = self.parse_logit_diff_target("FOR", topic)?;
         if !is_word(&self.peek(), "VS") {
             return Err(self.expected_one_of("FOR <target>", &["VS"], topic));
         }
         self.advance();
-        let target_b = self.parse_dla_target("VS")?;
+        let target_b = self.parse_logit_diff_target("VS", topic)?;
         self.eat_semicolon();
         Ok((prompt, target_a, target_b))
     }
@@ -273,6 +273,49 @@ impl Parser {
             target,
             scale,
         })
+    }
+
+    fn parse_logit_diff_target(
+        &mut self,
+        clause: &str,
+        topic: &str,
+    ) -> Result<DlaTarget, ParseError> {
+        if is_word(&self.peek(), "MAX_OTHER") {
+            self.advance();
+            let mut except = Vec::new();
+            if is_word(&self.peek(), "EXCEPT") || is_word(&self.peek(), "EXCLUDING") {
+                self.advance();
+                if !matches!(self.peek(), Token::LParen) {
+                    return Err(self.expected_one_of(
+                        &format!("{topic} ... MAX_OTHER EXCEPT"),
+                        &["(\"<tok>\", ...)"],
+                        topic,
+                    ));
+                }
+                self.advance(); // consume '('
+                if !matches!(self.peek(), Token::RParen) {
+                    loop {
+                        except.push(self.parse_dla_target("EXCEPT")?);
+                        if matches!(self.peek(), Token::Comma) {
+                            self.advance();
+                            if matches!(self.peek(), Token::RParen) {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if !matches!(self.peek(), Token::RParen) {
+                    return Err(ParseError(
+                        "expected `)` to close MAX_OTHER EXCEPT (...) list".into(),
+                    ));
+                }
+                self.advance(); // consume ')'
+            }
+            return Ok(DlaTarget::MaxOther { except });
+        }
+        self.parse_dla_target(clause)
     }
 
     fn parse_dla_target(&mut self, clause: &str) -> Result<DlaTarget, ParseError> {

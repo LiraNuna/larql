@@ -45,6 +45,14 @@ pub struct DiffLogitDiffReport {
     pub token_id_a: u32,
     pub target_b: String,
     pub token_id_b: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_target_a: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_token_id_a: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_target_b: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_token_id_b: Option<u32>,
     pub base_logit_a: f32,
     pub base_logit_b: f32,
     pub base_logit_diff: f32,
@@ -56,6 +64,189 @@ pub struct DiffLogitDiffReport {
     pub candidate_has_soft_prompt: bool,
     pub base_cached: bool,
     pub elapsed_ms: f64,
+}
+
+enum ContrastivePlan {
+    Fixed {
+        id_a: u32,
+        label_a: String,
+        id_b: u32,
+        label_b: String,
+    },
+    MaxOtherVsFixed {
+        excluded: std::collections::HashSet<u32>,
+        id_b: u32,
+        label_b: String,
+    },
+    FixedVsMaxOther {
+        id_a: u32,
+        label_a: String,
+        excluded: std::collections::HashSet<u32>,
+    },
+}
+
+impl ContrastivePlan {
+    fn uses_max_other(&self) -> bool {
+        !matches!(self, Self::Fixed { .. })
+    }
+}
+
+struct EvaluatedPair {
+    id_a: u32,
+    label_a: String,
+    logit_a: f32,
+    id_b: u32,
+    label_b: String,
+    logit_b: f32,
+}
+
+fn plan_contrastive_targets(
+    tokenizer: &larql_vindex::tokenizers::Tokenizer,
+    target_a: &DlaTarget,
+    target_b: &DlaTarget,
+    vocab_size: usize,
+) -> Result<ContrastivePlan, LqlError> {
+    let build_excluded =
+        |fixed_id: u32, except: &[DlaTarget]| -> Result<std::collections::HashSet<u32>, LqlError> {
+            let mut set = std::collections::HashSet::with_capacity(except.len() + 1);
+            set.insert(fixed_id);
+            for item in except {
+                let (eid, _) = resolve_dla_target(tokenizer, item, "EXCEPT", vocab_size)?;
+                set.insert(eid);
+            }
+            Ok(set)
+        };
+    match (target_a, target_b) {
+        (DlaTarget::MaxOther { .. }, DlaTarget::MaxOther { .. }) => Err(LqlError::Execution(
+            "LOGIT DIFF cannot use MAX_OTHER on both FOR and VS sides".into(),
+        )),
+        (DlaTarget::MaxOther { except }, fixed_b) => {
+            let (id_b, label_b) = resolve_dla_target(tokenizer, fixed_b, "VS", vocab_size)?;
+            let excluded = build_excluded(id_b, except)?;
+            Ok(ContrastivePlan::MaxOtherVsFixed {
+                excluded,
+                id_b,
+                label_b,
+            })
+        }
+        (fixed_a, DlaTarget::MaxOther { except }) => {
+            let (id_a, label_a) = resolve_dla_target(tokenizer, fixed_a, "FOR", vocab_size)?;
+            let excluded = build_excluded(id_a, except)?;
+            Ok(ContrastivePlan::FixedVsMaxOther {
+                id_a,
+                label_a,
+                excluded,
+            })
+        }
+        (fixed_a, fixed_b) => {
+            let (id_a, label_a) = resolve_dla_target(tokenizer, fixed_a, "FOR", vocab_size)?;
+            let (id_b, label_b) = resolve_dla_target(tokenizer, fixed_b, "VS", vocab_size)?;
+            Ok(ContrastivePlan::Fixed {
+                id_a,
+                label_a,
+                id_b,
+                label_b,
+            })
+        }
+    }
+}
+
+fn evaluate_contrastive_pair(
+    runtime: &V3Runtime,
+    tokenizer: &larql_vindex::tokenizers::Tokenizer,
+    ops: &PreparedOperands,
+    source: &OperandSource<'_>,
+    final_hidden: &[f32],
+    plan: &ContrastivePlan,
+) -> Result<EvaluatedPair, LqlError> {
+    match plan {
+        ContrastivePlan::Fixed {
+            id_a,
+            label_a,
+            id_b,
+            label_b,
+        } => {
+            let (logit_a, logit_b) =
+                project_two_logits(runtime, ops, source, final_hidden, *id_a, *id_b)?;
+            Ok(EvaluatedPair {
+                id_a: *id_a,
+                label_a: label_a.clone(),
+                logit_a,
+                id_b: *id_b,
+                label_b: label_b.clone(),
+                logit_b,
+            })
+        }
+        ContrastivePlan::MaxOtherVsFixed {
+            excluded,
+            id_b,
+            label_b,
+        } => {
+            let logits = ops
+                .head_over_normed(runtime.backend(), final_hidden)
+                .map_err(|e| LqlError::exec("LOGIT DIFF MAX_OTHER output head failed", e))?
+                .ok_or_else(|| {
+                    LqlError::Execution("the component carries no output head".into())
+                })?;
+            let (best_id, best_logit) = argmax_excluding(&logits, excluded)?;
+            let best_label = tokenizer
+                .decode(&[best_id], false)
+                .unwrap_or_else(|_| format!("<id:{best_id}>"));
+            let logit_b = logits[*id_b as usize];
+            Ok(EvaluatedPair {
+                id_a: best_id,
+                label_a: best_label,
+                logit_a: best_logit,
+                id_b: *id_b,
+                label_b: label_b.clone(),
+                logit_b,
+            })
+        }
+        ContrastivePlan::FixedVsMaxOther {
+            id_a,
+            label_a,
+            excluded,
+        } => {
+            let logits = ops
+                .head_over_normed(runtime.backend(), final_hidden)
+                .map_err(|e| LqlError::exec("LOGIT DIFF MAX_OTHER output head failed", e))?
+                .ok_or_else(|| {
+                    LqlError::Execution("the component carries no output head".into())
+                })?;
+            let (best_id, best_logit) = argmax_excluding(&logits, excluded)?;
+            let best_label = tokenizer
+                .decode(&[best_id], false)
+                .unwrap_or_else(|_| format!("<id:{best_id}>"));
+            let logit_a = logits[*id_a as usize];
+            Ok(EvaluatedPair {
+                id_a: *id_a,
+                label_a: label_a.clone(),
+                logit_a,
+                id_b: best_id,
+                label_b: best_label,
+                logit_b: best_logit,
+            })
+        }
+    }
+}
+
+fn argmax_excluding(
+    logits: &[f32],
+    excluded: &std::collections::HashSet<u32>,
+) -> Result<(u32, f32), LqlError> {
+    let mut best: Option<(u32, f32)> = None;
+    for (idx, &val) in logits.iter().enumerate() {
+        let id = idx as u32;
+        if excluded.contains(&id) || !val.is_finite() {
+            continue;
+        }
+        if best.is_none_or(|(_, bval)| val > bval) {
+            best = Some((id, val));
+        }
+    }
+    best.ok_or_else(|| {
+        LqlError::Execution("MAX_OTHER: no eligible vocabulary token left after exclusions".into())
+    })
 }
 
 impl Session {
@@ -81,8 +272,7 @@ impl Session {
                 "LOGIT DIFF: prompt encoded to zero tokens".into(),
             ));
         }
-        let (token_id_a, label_a) = resolve_dla_target(tokenizer, &target_a, "FOR", vocab_size)?;
-        let (token_id_b, label_b) = resolve_dla_target(tokenizer, &target_b, "VS", vocab_size)?;
+        let plan = plan_contrastive_targets(tokenizer, &target_a, &target_b, vocab_size)?;
 
         let start = std::time::Instant::now();
         let (ops, overrides, cache_key) =
@@ -120,24 +310,18 @@ impl Session {
             Some(ov) => OperandSource::overlaid(runtime.store(), ov),
             None => runtime.operands(),
         };
-        let (logit_a, logit_b) = project_two_logits(
-            runtime,
-            &ops,
-            &source,
-            &final_hidden,
-            token_id_a,
-            token_id_b,
-        )?;
+        let eval =
+            evaluate_contrastive_pair(runtime, tokenizer, &ops, &source, &final_hidden, &plan)?;
 
         Ok(LogitDiffReport {
             prompt_ids,
-            target_a: label_a,
-            token_id_a,
-            logit_a,
-            target_b: label_b,
-            token_id_b,
-            logit_b,
-            logit_diff: logit_a - logit_b,
+            target_a: eval.label_a,
+            token_id_a: eval.id_a,
+            logit_a: eval.logit_a,
+            target_b: eval.label_b,
+            token_id_b: eval.id_b,
+            logit_b: eval.logit_b,
+            logit_diff: eval.logit_a - eval.logit_b,
             executes_patched,
             has_soft_prompt,
             elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
@@ -145,7 +329,8 @@ impl Session {
     }
 
     /// Fast forward-only `DIFF LOGIT DIFF` comparing the session's active state against the
-    /// untouched Base container (using resident `cache.base` and skipping full-vocab GEMV).
+    /// untouched Base container (using resident `cache.base` and skipping full-vocab GEMV for
+    /// concrete token pairs, or resolving `MAX_OTHER [EXCEPT (...)]` over the cached hidden state).
     pub fn diff_logit_diff(
         &self,
         prompt: &str,
@@ -167,8 +352,7 @@ impl Session {
                 "DIFF LOGIT DIFF: prompt encoded to zero tokens".into(),
             ));
         }
-        let (token_id_a, label_a) = resolve_dla_target(tokenizer, &target_a, "FOR", vocab_size)?;
-        let (token_id_b, label_b) = resolve_dla_target(tokenizer, &target_b, "VS", vocab_size)?;
+        let plan = plan_contrastive_targets(tokenizer, &target_a, &target_b, vocab_size)?;
 
         let start = std::time::Instant::now();
         let (base_ops, base_key) = prepared_operands_for_base(runtime, prepared_cache)?;
@@ -187,15 +371,15 @@ impl Session {
                 prepared_cache.put_base_hidden(prompt_ids.clone(), h.clone());
                 (h, false)
             };
-        let (base_logit_a, base_logit_b) = project_two_logits(
+        let base_eval = evaluate_contrastive_pair(
             runtime,
+            tokenizer,
             &base_ops,
             &runtime.operands(),
             &base_hidden,
-            token_id_a,
-            token_id_b,
+            &plan,
         )?;
-        let base_logit_diff = base_logit_a - base_logit_b;
+        let base_logit_diff = base_eval.logit_a - base_eval.logit_b;
 
         let (cand_ops, cand_overrides, cand_key) =
             prepared_operands_for_session(runtime, overlay, prepared_cache)?;
@@ -203,44 +387,55 @@ impl Session {
         let candidate_has_weight_edits = cand_overrides.is_some();
         let candidate_has_soft_prompt = soft_prompt.is_some();
 
-        let (cand_logit_a, cand_logit_b) =
-            if !candidate_has_weight_edits && !candidate_has_soft_prompt {
-                (base_logit_a, base_logit_b)
-            } else {
-                let cand_hidden = forward_final_hidden(
-                    runtime,
-                    &cand_ops,
-                    prepared_cache,
-                    cand_key.as_ref(),
-                    soft_prompt.as_deref(),
-                    &prompt_ids,
-                )?;
-                let cand_source = match &cand_overrides {
-                    Some(ov) => OperandSource::overlaid(runtime.store(), ov),
-                    None => runtime.operands(),
-                };
-                project_two_logits(
-                    runtime,
-                    &cand_ops,
-                    &cand_source,
-                    &cand_hidden,
-                    token_id_a,
-                    token_id_b,
-                )?
+        let cand_eval = if !candidate_has_weight_edits && !candidate_has_soft_prompt {
+            EvaluatedPair {
+                id_a: base_eval.id_a,
+                label_a: base_eval.label_a.clone(),
+                logit_a: base_eval.logit_a,
+                id_b: base_eval.id_b,
+                label_b: base_eval.label_b.clone(),
+                logit_b: base_eval.logit_b,
+            }
+        } else {
+            let cand_hidden = forward_final_hidden(
+                runtime,
+                &cand_ops,
+                prepared_cache,
+                cand_key.as_ref(),
+                soft_prompt.as_deref(),
+                &prompt_ids,
+            )?;
+            let cand_source = match &cand_overrides {
+                Some(ov) => OperandSource::overlaid(runtime.store(), ov),
+                None => runtime.operands(),
             };
-        let candidate_logit_diff = cand_logit_a - cand_logit_b;
+            evaluate_contrastive_pair(
+                runtime,
+                tokenizer,
+                &cand_ops,
+                &cand_source,
+                &cand_hidden,
+                &plan,
+            )?
+        };
+        let candidate_logit_diff = cand_eval.logit_a - cand_eval.logit_b;
+        let show_base_targets = plan.uses_max_other();
 
         Ok(DiffLogitDiffReport {
             prompt_ids,
-            target_a: label_a,
-            token_id_a,
-            target_b: label_b,
-            token_id_b,
-            base_logit_a,
-            base_logit_b,
+            target_a: cand_eval.label_a,
+            token_id_a: cand_eval.id_a,
+            target_b: cand_eval.label_b,
+            token_id_b: cand_eval.id_b,
+            base_target_a: show_base_targets.then_some(base_eval.label_a),
+            base_token_id_a: show_base_targets.then_some(base_eval.id_a),
+            base_target_b: show_base_targets.then_some(base_eval.label_b),
+            base_token_id_b: show_base_targets.then_some(base_eval.id_b),
+            base_logit_a: base_eval.logit_a,
+            base_logit_b: base_eval.logit_b,
             base_logit_diff,
-            candidate_logit_a: cand_logit_a,
-            candidate_logit_b: cand_logit_b,
+            candidate_logit_a: cand_eval.logit_a,
+            candidate_logit_b: cand_eval.logit_b,
             candidate_logit_diff,
             delta_logit_diff: candidate_logit_diff - base_logit_diff,
             candidate_has_weight_edits,
